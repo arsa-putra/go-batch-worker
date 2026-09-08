@@ -407,7 +407,8 @@ func (t *RedisBatchTracker) BuildResult(
 		return nil, err
 	}
 
-	// --- MULAI PEMBERSIHAN DUPLIKAT & CROSS-CONTAMINATION ---
+	// --- REMOVE DUPLICATES & CROSS-CONTAMINATION ---
+	// Filter out duplicate failures
 	seenFailed := make(map[string]bool)
 	var cleanFailed []BatchItemResult
 	for _, item := range failedItems {
@@ -420,7 +421,7 @@ func (t *RedisBatchTracker) BuildResult(
 	seenSuccess := make(map[string]bool)
 	var cleanSuccess []BatchItemResult
 	for _, item := range successItems {
-		// Email yang sudah masuk daftar failed TIDAK BOLEH nongol di success
+		// Filter out duplicates and ensure items present in failed do not appear in success
 		if !seenSuccess[item.Key] && !seenFailed[item.Key] {
 			seenSuccess[item.Key] = true
 			cleanSuccess = append(cleanSuccess, item)
@@ -445,8 +446,8 @@ func (t *RedisBatchTracker) BuildResult(
 
 		Total: state.Total,
 
-		Success:    state.Success,
-		Failed:     state.Failed,
+		Success:    int64(len(cleanSuccess)),
+		Failed:     int64(len(cleanFailed)),
 		FinishedAt: finishedAt,
 
 		SuccessItems: cleanSuccess,
@@ -675,9 +676,9 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 		}
 
 		for _, key := range keys {
-			// Kita pisahkan berdasarkan titik dua ":"
-			// worker:batch:{id} panjangnya 3
-			// worker:batch:{id}:success panjangnya 4 (kita skip yang ini)
+			// Split the key by colon ":"
+			// worker:batch:{id} has length of 3
+			// worker:batch:{id}:success has length of 4 (skip sub-keys)
 			parts := strings.Split(key, ":")
 			if len(parts) == 3 {
 				batchID := parts[2]
@@ -688,13 +689,13 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 			}
 		}
 
-		// Kalau cursor kembali ke 0, artinya Redis sudah selesai scan semua key
+		// If cursor returns to 0, the Redis scan is complete
 		if cursor == 0 {
 			break
 		}
 	}
 
-	// Loop semua ID yang valid, lalu tarik State-nya masing-masing
+	// Loop through all valid batch IDs and retrieve their respective states
 	var batches []*BatchState
 	for _, id := range batchIDs {
 		state, err := t.Get(id)
