@@ -11,86 +11,152 @@ const dashboardListHTML = `
     <title>Worker Dashboard</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 40px; background: #f4f6f8; color: #333; }
-        .container { max-width: 1000px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        h2 { margin-top: 0; color: #111; font-size: 24px; border-bottom: 2px solid #f0f2f5; padding-bottom: 12px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-        th, td { border: 1px solid #e9ecef; padding: 12px; text-align: left; font-size: 14px; }
-        th { background-color: #f8f9fa; color: #495057; font-weight: 600; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; display: inline-block; text-transform: capitalize; }
+        .container { max-width: 1200px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; color: #111; font-size: 24px; border-bottom: 2px solid #f0f2f5; padding-bottom: 12px; margin-bottom: 20px; }
         
+        .search-box { margin-bottom: 15px; padding: 10px 14px; width: 320px; border: 1px solid #ced4da; border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.2s; }
+        .search-box:focus { border-color: #4c6ef5; box-shadow: 0 0 0 3px rgba(76,110,245,0.1); }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }
+        th, td { border: 1px solid #e9ecef; padding: 14px 16px; text-align: left; font-size: 14px; vertical-align: middle; }
+        th { background-color: #f8f9fa; color: #495057; font-weight: 600; white-space: nowrap; }
+        
+        .badge { padding: 6px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px; }
         .status-running { color: #004085; background: #cce5ff; }
         .status-completed { color: #155724; background: #d4edda; }
+        .status-failed { color: #c92a2a; background: #ffc9c9; }
         
-        .text-success { color: #2b8a3e; font-weight: bold; }
-        .text-failed { color: #c92a2a; font-weight: bold; }
-        .btn-view { background-color: #4c6ef5; color: white; text-decoration: none; padding: 6px 12px; border-radius: 4px; font-size: 13px; font-weight: 600; transition: 0.2s; }
+        .col-action { width: 120px; text-align: center; white-space: nowrap; }
+        .btn-view { background-color: #4c6ef5; color: white; text-decoration: none; padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; display: inline-block; transition: background 0.2s; }
         .btn-view:hover { background-color: #3b5bdb; }
+        
+        .pagination { margin-top: 20px; display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+        .pagination button { padding: 8px 14px; border: 1px solid #ced4da; background: white; cursor: pointer; border-radius: 6px; font-weight: 500; font-size: 13px; transition: 0.2s; }
+        .pagination button:disabled { background: #f1f3f5; color: #adb5bd; cursor: not-allowed; }
+        .pagination button:hover:not(:disabled) { background: #e9ecef; }
+        .page-info { font-size: 14px; margin: 0 10px; color: #495057; }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>Worker Batches Dashboard</h2>
+        
         {{if .}}
-        <table>
+        <!-- Search Input -->
+        <input type="text" id="searchBatch" class="search-box" placeholder="Search by Batch ID..." onkeyup="resetPage(); renderTable()">
+
+        <table id="tableBatches">
             <thead>
                 <tr>
                     <th>Batch ID</th>
-                    <th>Status</th>
-                    <th>Submitted At</th>
-                    <th>Total Data</th>
-                    <th>Success</th>
-                    <th>Failed</th>
-                    <th>Processing</th>
-                    <th>Action</th>
+                    <th style="width: 110px;">Status</th>
+                    <th style="width: 180px;">Submitted At</th>
+                    <th style="width: 100px;">Total Data</th>
+                    <th style="width: 90px;">Success</th>
+                    <th style="width: 90px;">Failed</th>
+                    <th style="width: 100px;">Processing</th>
+                    <th class="col-action">Action</th>
                 </tr>
             </thead>
             <tbody>
                 {{range .}}
-                <tr>
-                    <td style="font-family: monospace;">{{.BatchID}}</td>
+                <tr class="batch-row" data-batchid="{{.BatchID}}">
+                    <td style="font-family: monospace; font-weight: 500; color: #212529;">{{.BatchID}}</td>
                     <td>
-                        <span class="badge status-{{ .Status }}">{{ .Status }}</span>
+                        <span class="badge status-{{if .Status}}{{.Status}}{{else}}running{{end}}">{{if .Status}}{{.Status}}{{else}}running{{end}}</span>
                     </td>
                     
-                    <!-- Store Unix timestamp in data attribute for client-side formatting -->
                     <td class="date-cell" data-timestamp="{{ .CreatedAt }}">
                         {{ .CreatedAt }}
                     </td>
                     
-                    <td>{{ .Total }}</td>
-                    <td style="color: green;">{{ .Success }}</td>
-                    <td style="color: red;">{{ .Failed }}</td>
-                    <td style="color: orange;"><strong>{{ .Processing }}</strong></td>
-                    <td>
+                    <td style="font-weight: 600;">{{ .Total }}</td>
+                    <td style="color: #2b8a3e; font-weight: bold;">{{ .Success }}</td>
+                    <td style="color: #c92a2a; font-weight: bold;">{{ .Failed }}</td>
+                    <td style="color: #f59f00; font-weight: bold;">{{ .Processing }}</td>
+                    <td class="col-action">
                         <a href="batches/{{.BatchID}}/detail" class="btn-view" target="_blank">View Detail</a>
                     </td>
                 </tr>
                 {{end}}
             </tbody>
         </table>
+
+        <!-- Pagination Controls -->
+        <div class="pagination" id="pagBatches"></div>
+        
         {{else}}
-        <p>No active or historical batches found.</p>
+        <p style="color: #6c757d; font-style: italic;">No active or historical batches found.</p>
         {{end}}
     </div>
 
     <script>
         // Format timestamp into readable local date format
         const dateCells = document.querySelectorAll('.date-cell');
-        
         dateCells.forEach(cell => {
-            const timestamp = parseInt(cell.getAttribute('data-timestamp')) * 1000;
-            if (timestamp > 0) {
+            const rawVal = cell.getAttribute('data-timestamp').trim();
+            const timestamp = parseInt(rawVal) * 1000;
+            if (!isNaN(timestamp) && timestamp > 0) {
                 const date = new Date(timestamp);
                 cell.innerText = date.toLocaleString('id-ID'); 
+            } else if (rawVal && rawVal !== "0" && rawVal !== "-") {
+                cell.innerText = rawVal; // Fallback jika string format waktu lain
             } else {
                 cell.innerText = "-";
             }
         });
+
+        // Pagination and Search Logic for Batch List
+        const rowsPerPage = 25;
+        let currentPage = 1;
+
+        function resetPage() {
+            currentPage = 1;
+        }
+
+        function changePage(newPage) {
+            currentPage = newPage;
+            renderTable();
+        }
+
+        function renderTable() {
+            const searchInput = document.getElementById('searchBatch').value.toLowerCase();
+            const rows = Array.from(document.getElementsByClassName('batch-row'));
+            
+            const filteredRows = rows.filter(row => {
+                const batchId = row.getAttribute('data-batchid').toLowerCase();
+                const match = batchId.includes(searchInput);
+                row.style.display = 'none';
+                return match;
+            });
+
+            const totalPages = Math.ceil(filteredRows.length / rowsPerPage) || 1;
+            if (currentPage > totalPages) currentPage = totalPages;
+            
+            const start = (currentPage - 1) * rowsPerPage;
+            const end = start + rowsPerPage;
+
+            filteredRows.slice(start, end).forEach(row => row.style.display = '');
+
+            const pagContainer = document.getElementById('pagBatches');
+            if (!pagContainer) return;
+
+            let prevDisabled = currentPage === 1 ? 'disabled' : '';
+            let nextDisabled = currentPage === totalPages ? 'disabled' : '';
+
+            pagContainer.innerHTML = 
+                '<button onclick="changePage(' + (currentPage - 1) + ')" ' + prevDisabled + '>Prev</button>' +
+                '<span class="page-info">Page ' + currentPage + ' of ' + totalPages + ' (' + filteredRows.length + ' batches)</span>' +
+                '<button onclick="changePage(' + (currentPage + 1) + ')" ' + nextDisabled + '>Next</button>';
+        }
+
+        window.onload = function() {
+            renderTable();
+        };
     </script>
 </body>
 </html>
 `
-
 const dashboardDetailHTML = `
 <!DOCTYPE html>
 <html>
@@ -207,7 +273,7 @@ const dashboardDetailHTML = `
     </div>
 
     <script>
-        const rowsPerPage = 10;
+        const rowsPerPage = 25;
         let pages = { success: 1, failed: 1, processing: 1 };
 
         function switchTab(tabName, btnElement) {
