@@ -45,6 +45,11 @@ type BulkWorker[T any] struct {
 	limiter *ResourceLimiter
 }
 
+type ItemIdentifiable interface {
+	GetBatchID() string
+	GetItemID() string
+}
+
 func NewBulkWorker[T any](
 	redisClient *redis.Client,
 	workerCount int,
@@ -94,6 +99,12 @@ func (w *BulkWorker[T]) Submit(
 
 	if w.closed.Load() {
 		return ErrWorkerClosed
+	}
+
+	if w.tracker != nil {
+		if identifiable, ok := any(job).(ItemIdentifiable); ok {
+			_ = w.tracker.TrackPendingPayload(identifiable.GetBatchID(), identifiable.GetItemID(), job)
+		}
 	}
 
 	select {

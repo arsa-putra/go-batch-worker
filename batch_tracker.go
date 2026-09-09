@@ -63,11 +63,13 @@ func (t *RedisBatchTracker) RegisterBatch(
 
 	key := t.stateKey(batchID)
 	fields := map[string]string{
-		"batch_id": batchID,
-		"total":    strconv.Itoa(total),
-		"done":     "0",
-		"success":  "0",
-		"failed":   "0",
+		"batch_id":   batchID,
+		"total":      strconv.Itoa(total),
+		"done":       "0",
+		"success":    "0",
+		"failed":     "0",
+		"created_at": strconv.FormatInt(time.Now().Unix(), 10),
+		"status":     "running",
 	}
 
 	err := t.redis.HMSet(
@@ -103,17 +105,26 @@ func (t *RedisBatchTracker) Get(
 	}
 	state := &BatchState{
 		BatchID: m["batch_id"],
+		Status:  m["status"],
 	}
 
 	total, _ := strconv.ParseInt(m["total"], 10, 64)
 	done, _ := strconv.ParseInt(m["done"], 10, 64)
 	success, _ := strconv.ParseInt(m["success"], 10, 64)
 	failed, _ := strconv.ParseInt(m["failed"], 10, 64)
+	createdAt, _ := strconv.ParseInt(m["created_at"], 10, 64)
+
+	processing := total - (success + failed)
+	if processing < 0 {
+		processing = 0
+	}
 
 	state.Total = total
 	state.Done = done
 	state.Success = success
 	state.Failed = failed
+	state.CreatedAt = createdAt
+	state.Processing = processing
 
 	return state, nil
 }
@@ -225,10 +236,12 @@ func (t *RedisBatchTracker) TryComplete(
 	if ok {
 		batchCompletedTotal.Inc()
 
-		t.redis.HSet(
+		t.redis.HMSet(
 			t.stateKey(batchID),
-			"finished_at",
-			time.Now().Unix(),
+			map[string]string{
+				"finished_at": strconv.FormatInt(time.Now().Unix(), 10),
+				"status":      "completed",
+			},
 		)
 	}
 	return ok, nil
@@ -441,17 +454,44 @@ func (t *RedisBatchTracker) BuildResult(
 		t.getStoredSuccessCount(
 			batchID,
 		)
+
+	// Calculate clean counts and dynamic processing tasks
+	cleanSuccessCount := int64(len(cleanSuccess))
+	cleanFailedCount := int64(len(cleanFailed))
+	doneCount := cleanSuccessCount + cleanFailedCount
+
+	processing := state.Total - doneCount
+	if processing < 0 {
+		processing = 0
+	}
+
+	status := state.Status
+	if doneCount >= state.Total {
+		status = "completed"
+	}
+
+	// Automatically fetch remaining processing keys from Redis Set
+	processingItems, err := t.LoadPendingPayloads(batchID)
+	if err != nil {
+		processingItems = []map[string]interface{}{}
+	}
+
 	return &BatchResult{
 		BatchID: batchID,
 
-		Total: state.Total,
+		Total:   state.Total,
+		Success: cleanSuccessCount,
+		Failed:  cleanFailedCount,
 
-		Success:    int64(len(cleanSuccess)),
-		Failed:     int64(len(cleanFailed)),
+		Processing: processing,
+		CreatedAt:  state.CreatedAt,
+		Status:     status,
+
 		FinishedAt: finishedAt,
 
-		SuccessItems: cleanSuccess,
-		FailedItems:  cleanFailed,
+		SuccessItems:    cleanSuccess,
+		FailedItems:     cleanFailed,
+		ProcessingItems: processingItems,
 
 		StoredSuccesses: storedSuccesses,
 		StoredErrors:    storedErrors,
@@ -472,6 +512,9 @@ func (t *RedisBatchTracker) CompleteSuccess(
 		return err
 	}
 
+	// Automatically remove from processing set upon success
+	_ = t.RemovePendingPayload(batchID, result.Key)
+
 	return t.MarkSuccess(
 		batchID,
 	)
@@ -490,6 +533,9 @@ func (t *RedisBatchTracker) CompleteFailed(
 	); err != nil {
 		return err
 	}
+
+	// Automatically remove from processing set upon failure
+	_ = t.RemovePendingPayload(batchID, result.Key)
 
 	return t.MarkFailed(
 		batchID,
@@ -700,9 +746,69 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 	for _, id := range batchIDs {
 		state, err := t.Get(id)
 		if err == nil {
+			// FIX: Retrieve cleaned and deduplicated data via BuildResult
+			result, errResult := t.BuildResult(id)
+			if errResult == nil {
+				// 1. Override raw counters with cleaned data counts
+				state.Success = result.Success
+				state.Failed = result.Failed
+
+				// 2. Recalculate the actual done count
+				state.Done = state.Success + state.Failed
+
+				// 3. Recalculate remaining processing tasks
+				processing := state.Total - state.Done
+				if processing < 0 {
+					processing = 0
+				}
+				state.Processing = processing
+
+				// 4. Update status based on the accurate calculated counts
+				if state.Done >= state.Total {
+					state.Status = "completed"
+				}
+			}
+
 			batches = append(batches, state)
 		}
 	}
 
 	return batches, nil
+}
+
+// Helper key for processing payload data
+func (t *RedisBatchTracker) processingDataKey(batchID string) string {
+	return fmt.Sprintf("worker:batch:%s:processing_data", batchID)
+}
+
+// Track pending payload with full JSON data
+func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, payload interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	// Store in Redis Hash: Field = itemID, Value = JSON Payload string
+	return t.redis.HSet(t.processingDataKey(batchID), itemID, string(data)).Err()
+}
+
+// Remove payload from processing hash when completed
+func (t *RedisBatchTracker) RemovePendingPayload(batchID string, itemID string) error {
+	return t.redis.HDel(t.processingDataKey(batchID), itemID).Err()
+}
+
+// Load all processing payloads as a map or slice of structs/maps
+func (t *RedisBatchTracker) LoadPendingPayloads(batchID string) ([]map[string]interface{}, error) {
+	resultMap, err := t.redis.HGetAll(t.processingDataKey(batchID)).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var payloads []map[string]interface{}
+	for _, rawJSON := range resultMap {
+		var item map[string]interface{}
+		if json.Unmarshal([]byte(rawJSON), &item) == nil {
+			payloads = append(payloads, item)
+		}
+	}
+	return payloads, nil
 }

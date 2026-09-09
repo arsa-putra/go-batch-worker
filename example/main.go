@@ -10,9 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	// Replace with your actual repository import path
-	// "github.com/username-lu/go-batch-worker"
-
 	worker "github.com/arsa-putra/go-batch-worker"
 	"github.com/gorilla/mux"
 	redis "gopkg.in/redis.v5"
@@ -93,6 +90,9 @@ func (p *TransferUserProcessor) Name() string {
 }
 
 func (p *TransferUserProcessor) Process(ctx context.Context, job TransferUserPayload) error {
+	// Add artificial delay so processing state can be observed on dashboard
+	time.Sleep(10 * time.Second)
+
 	if job.Email == "error@example.com" {
 		if p.Tracker != nil {
 			_ = p.Tracker.CompleteFailed(job.BatchID, worker.BatchItemResult{
@@ -122,6 +122,12 @@ func main() {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	fmt.Println("Connected to Redis successfully!")
+
+	// --- AUTO FLUSH FOR CLEAN TESTING ---
+	if err := rdb.FlushAll().Err(); err != nil {
+		log.Fatalf("Failed to flush Redis: %v", err)
+	}
+	fmt.Println("🧹 Redis flushed successfully for a fresh test run!")
 
 	// 2. Setup Trackers
 	tracker := worker.NewRedisBatchTracker(
@@ -156,10 +162,10 @@ func main() {
 		nil,
 	)
 
-	// 5. Initialize BulkWorker
+	// 5. Initialize BulkWorker (Set concurrency to 1 so items stay in processing state longer for demo)
 	transferUser := worker.NewBulkWorker(
 		rdb,
-		2,
+		1,
 		1000,
 		&TransferUserProcessor{Tracker: detailTracker},
 	)
@@ -167,18 +173,18 @@ func main() {
 	transferUser.SetCompletionHandler(completion)
 	autoRetry.RegisterBulk(transferUser)
 
-	// 6. Setup Worker Manager (Registering both Batch and Bulk correctly)
+	// 6. Setup Worker Manager
 	manager := worker.NewManager(
 		autoRetry,
 		deviceLogBatch,
-		transferUser, // <-- Menggunakan variabel 'transferUser' sesuai field bootstrap lu
+		transferUser,
 	)
 	manager.SetDBLimiter(10)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start manager (This will trigger Start() on all registered workers)
+	// Start manager
 	go func() {
 		fmt.Println("🚀 Starting worker manager...")
 		manager.Start(ctx)
@@ -202,9 +208,17 @@ func main() {
 			CreatedAt:  time.Now(),
 		})
 
-		// B. Test BulkWorker Submit
+		// B. Test BulkWorker Submit (Larger batch to keep processing visible)
 		batchID := "demo-batch-transfer-001"
-		emails := []string{"user1@example.com", "user2@example.com", "error@example.com"}
+		emails := []string{
+			"user1@example.com",
+			"user2@example.com",
+			"user3@example.com",
+			"user4@example.com",
+			"user5@example.com",
+			"user6@example.com",
+			"error@example.com",
+		}
 
 		_ = detailTracker.RegisterBatch(batchID, len(emails))
 		_ = detailTracker.SaveMetadata(batchID, &worker.BatchMetadata{
@@ -246,12 +260,12 @@ func main() {
 	}).Methods("GET")
 
 	server := &http.Server{
-		Addr:    ":8081",
+		Addr:    ":8081", // Fixed port matching port-printing info below
 		Handler: r,
 	}
 
 	go func() {
-		fmt.Println("🌐 Dashboard server running at http://localhost:8080/batches")
+		fmt.Println("🌐 Dashboard server running at http://localhost:8081/batches")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}
