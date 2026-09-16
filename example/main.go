@@ -241,31 +241,52 @@ func main() {
 	// 7. Setup HTTP Router for Dashboard & API Monitoring
 	r := mux.NewRouter()
 
+	// A. List Batches Page
 	r.HandleFunc("/batches", func(w http.ResponseWriter, r *http.Request) {
+		// Render specific dashboard list for the given job
 		worker.RenderDashboardList(w, detailTracker)
 	}).Methods("GET")
 
+	// A.A. List Page: Now requires the {job} parameter
+	r.HandleFunc("/batches/{job}", func(w http.ResponseWriter, r *http.Request) {
+		jobName := mux.Vars(r)["job"]
+
+		// Render specific dashboard list for the given job
+		worker.RenderDashboardListByJobName(w, detailTracker, jobName)
+	}).Methods("GET")
+
+	// B. Detail Page: Since BatchID is globally unique, we can use an absolute route
 	r.HandleFunc("/batches/{id}/detail", func(w http.ResponseWriter, r *http.Request) {
 		batchID := mux.Vars(r)["id"]
 		worker.RenderDashboardDetail(w, detailTracker, batchID)
 	}).Methods("GET")
 
+	// C. API Endpoints
 	r.HandleFunc("/api/batches", func(w http.ResponseWriter, r *http.Request) {
+		// Ensure ServeDashboardListJSON in dashboard.go is updated to accept jobName!
 		worker.ServeDashboardListJSON(w, r, detailTracker)
 	}).Methods("GET")
 
-	r.HandleFunc("/api/batches/{id}/detail", func(w http.ResponseWriter, r *http.Request) {
+	// C.C API Endpoints (Adjusted to include job parameter)
+	r.HandleFunc("/api/batches/{job}", func(w http.ResponseWriter, r *http.Request) {
+		jobName := mux.Vars(r)["job"]
+
+		// Ensure ServeDashboardListJSON in dashboard.go is updated to accept jobName!
+		worker.ServeDashboardListByJobNameJSON(w, r, detailTracker, jobName)
+	}).Methods("GET")
+
+	r.HandleFunc("/api/batch-detail/{id}", func(w http.ResponseWriter, r *http.Request) {
 		batchID := mux.Vars(r)["id"]
 		worker.ServeDashboardDetailJSON(w, r, detailTracker, batchID)
 	}).Methods("GET")
 
 	server := &http.Server{
-		Addr:    ":8081", // Fixed port matching port-printing info below
+		Addr:    ":8081",
 		Handler: r,
 	}
 
 	go func() {
-		fmt.Println("🌐 Dashboard server running at http://localhost:8081/batches")
+		fmt.Println("🌐 Dashboard Transfer User running at: http://localhost:8081/batches/transfer_user")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}

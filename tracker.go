@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,11 @@ type BatchTracker interface {
 	IsCancelled(batchID string) (bool, error)
 	CompleteCancelled(batchID string, result BatchItemResult) error
 	ListBatches() ([]*BatchState, error)
+	LinkBatchToJob(jobName string, batchID string) error
+	LoadBatchesByJob(jobName string) ([]*BatchState, error)
+	TrackPendingPayload(batchID string, itemID string, payload interface{}) error
+	RemovePendingPayload(batchID string, itemID string) error
+	LoadPendingPayloads(batchID string) ([]map[string]interface{}, error)
 }
 
 type RedisBatchTracker struct {
@@ -773,6 +779,10 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 		}
 	}
 
+	sort.Slice(batches, func(i, j int) bool {
+		return batches[i].CreatedAt > batches[j].CreatedAt
+	})
+
 	return batches, nil
 }
 
@@ -855,6 +865,10 @@ func (t *RedisBatchTracker) LoadBatchesByJob(jobName string) ([]*BatchState, err
 			batches = append(batches, state)
 		}
 	}
+
+	sort.Slice(batches, func(i, j int) bool {
+		return batches[i].CreatedAt > batches[j].CreatedAt
+	})
 
 	return batches, nil
 }

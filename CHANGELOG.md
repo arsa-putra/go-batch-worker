@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Auto-Linking & Indexing**: Implemented zero-config job indexing. `BulkWorker` now automatically links tracking keys to their specific job name (`w.Name()`) using Redis Sets upon payload submission.
-- **Job-Specific Queries**: Added `LoadBatchesByJob(jobName)` in `RedisBatchTracker` to allow fetching lightweight batch lists specific to a single worker (e.g., separating `transfer_user` from other jobs).
+- **Job-Specific & Global Dashboards**: Added support for both global batch monitoring (`/batches`) and job-specific routing (`/batches/{job}`) with dynamic UI header rendering.
+- **Advanced Dashboard Filtering**: Added client-side date range filtering (`From` and `To` date pickers) alongside real-time Batch ID search and pagination.
 
 ### Refactored
-- **Codebase Standardization**: Translated all remaining Indonesian inline comments to English across `tracker.go`, `bulk_worker.go`, and `batch_worker.go` for professional convention.
+- **Codebase Standardization**: Translated all remaining Indonesian inline comments to English across `tracker.go`, `bulk_worker.go`, `batch_worker.go`, and `dashboard.go` for professional convention.
 - **Memory Optimization**: Refactored dashboard list data retrieval to return a lightweight `[]*BatchState` instead of a heavy payload containing item arrays, preventing potential OOM (Out of Memory) issues on the list view.
+- **Timestamp & Date Rendering**: Optimized `CreatedAt` handling by preserving raw Unix epoch timestamps in the DOM and formatting readable local dates entirely on the client side.
 
 ## [v1.1.1] - 2026-09-09
 
