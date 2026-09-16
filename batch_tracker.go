@@ -812,3 +812,49 @@ func (t *RedisBatchTracker) LoadPendingPayloads(batchID string) ([]map[string]in
 	}
 	return payloads, nil
 }
+
+// Helper key to index batches grouped by their job name
+func (t *RedisBatchTracker) jobBatchesKey(jobName string) string {
+	return fmt.Sprintf("worker:job:%s:batches", jobName)
+}
+
+// LinkBatchToJob automatically links a batch ID to a specific job using Redis Set
+func (t *RedisBatchTracker) LinkBatchToJob(jobName string, batchID string) error {
+	return t.redis.SAdd(t.jobBatchesKey(jobName), batchID).Err()
+}
+
+// LoadBatchesByJob retrieves all lightweight batch states for a specific job
+func (t *RedisBatchTracker) LoadBatchesByJob(jobName string) ([]*BatchState, error) {
+	batchIDs, err := t.redis.SMembers(t.jobBatchesKey(jobName)).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var batches []*BatchState
+	for _, id := range batchIDs {
+		state, err := t.Get(id)
+		if err == nil {
+			// Retrieve cleaned and deduplicated data to ensure accurate dashboard counters
+			result, errResult := t.BuildResult(id)
+			if errResult == nil {
+				state.Success = result.Success
+				state.Failed = result.Failed
+
+				state.Done = state.Success + state.Failed
+
+				processing := state.Total - state.Done
+				if processing < 0 {
+					processing = 0
+				}
+				state.Processing = processing
+
+				if state.Done >= state.Total {
+					state.Status = "completed"
+				}
+			}
+			batches = append(batches, state)
+		}
+	}
+
+	return batches, nil
+}

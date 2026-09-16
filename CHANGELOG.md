@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0-v1.0.0.html).
 
+## [v1.2.0] - 2026-09-16
+
+### Added
+- **Auto-Linking & Indexing**: Implemented zero-config job indexing. `BulkWorker` now automatically links tracking keys to their specific job name (`w.Name()`) using Redis Sets upon payload submission.
+- **Job-Specific Queries**: Added `LoadBatchesByJob(jobName)` in `RedisBatchTracker` to allow fetching lightweight batch lists specific to a single worker (e.g., separating `transfer_user` from other jobs).
+
+### Refactored
+- **Codebase Standardization**: Translated all remaining Indonesian inline comments to English across `tracker.go`, `bulk_worker.go`, and `batch_worker.go` for professional convention.
+- **Memory Optimization**: Refactored dashboard list data retrieval to return a lightweight `[]*BatchState` instead of a heavy payload containing item arrays, preventing potential OOM (Out of Memory) issues on the list view.
+
 ## [v1.1.1] - 2026-09-09
 
 ### Fixed
