@@ -39,11 +39,32 @@ const dashboardListHTML = `
 </head>
 <body>
     <div class="container">
-        <h2>Worker Batches Dashboard</h2>
+        <!-- Make title dynamic based on JobName -->
+        <h2>
+            Worker Batches Dashboard
+            {{if .JobName}} 
+            <span style="color: #4c6ef5;">- {{.JobName}}</span>
+            {{end}}
+        </h2>
         
-        {{if .}}
-        <!-- Search Input -->
-        <input type="text" id="searchBatch" class="search-box" placeholder="Search by Batch ID..." onkeyup="resetPage(); renderTable()">
+        <!-- Change from '.' to '.Batches' -->
+        {{if .Batches}}
+        
+        <!-- FILTER & SEARCH PANEL -->
+        <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; border: 1px solid #e9ecef; margin-bottom: 20px; display: flex; gap: 15px; align-items: flex-end;">
+            <div style="flex: 2;">
+                <label style="display: block; font-size: 11px; font-weight: 700; color: #6c757d; margin-bottom: 6px; letter-spacing: 0.5px;">SEARCH BATCH ID</label>
+                <input type="text" id="searchBatch" class="search-box" placeholder="Type batch ID..." onkeyup="resetPage(); renderTable()" style="margin-bottom: 0; width: 100%; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label style="display: block; font-size: 11px; font-weight: 700; color: #6c757d; margin-bottom: 6px; letter-spacing: 0.5px;">START DATE</label>
+                <input type="date" id="filterDateFrom" class="search-box" onchange="resetPage(); renderTable()" style="margin-bottom: 0; width: 100%; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label style="display: block; font-size: 11px; font-weight: 700; color: #6c757d; margin-bottom: 6px; letter-spacing: 0.5px;">END DATE</label>
+                <input type="date" id="filterDateTo" class="search-box" onchange="resetPage(); renderTable()" style="margin-bottom: 0; width: 100%; box-sizing: border-box;">
+            </div>
+        </div>
 
         <table id="tableBatches">
             <thead>
@@ -59,8 +80,9 @@ const dashboardListHTML = `
                 </tr>
             </thead>
             <tbody>
-                {{range .}}
-                <tr class="batch-row" data-batchid="{{.BatchID}}">
+                <!-- Change range from '.' to '.Batches' -->
+                {{range .Batches}}
+                <tr class="batch-row" data-batchid="{{.BatchID}}" data-timestamp="{{.CreatedAt}}">
                     <td style="font-family: monospace; font-weight: 500; color: #212529;">{{.BatchID}}</td>
                     <td>
                         <span class="badge status-{{if .Status}}{{.Status}}{{else}}running{{end}}">{{if .Status}}{{.Status}}{{else}}running{{end}}</span>
@@ -75,7 +97,7 @@ const dashboardListHTML = `
                     <td style="color: #c92a2a; font-weight: bold;">{{ .Failed }}</td>
                     <td style="color: #f59f00; font-weight: bold;">{{ .Processing }}</td>
                     <td class="col-action">
-                        <a href="batches/{{.BatchID}}/detail" class="btn-view" target="_blank">View Detail</a>
+                        <a href="/batches/{{.BatchID}}/detail" class="btn-view" target="_blank">View Detail</a>
                     </td>
                 </tr>
                 {{end}}
@@ -92,21 +114,20 @@ const dashboardListHTML = `
 
     <script>
         // Format timestamp into readable local date format
-        const dateCells = document.querySelectorAll('.date-cell');
-        dateCells.forEach(cell => {
+        document.querySelectorAll('.date-cell').forEach(cell => {
             const rawVal = cell.getAttribute('data-timestamp').trim();
             const timestamp = parseInt(rawVal) * 1000;
             if (!isNaN(timestamp) && timestamp > 0) {
                 const date = new Date(timestamp);
                 cell.innerText = date.toLocaleString('id-ID'); 
             } else if (rawVal && rawVal !== "0" && rawVal !== "-") {
-                cell.innerText = rawVal; // Fallback jika string format waktu lain
+                cell.innerText = rawVal; 
             } else {
                 cell.innerText = "-";
             }
         });
 
-        // Pagination and Search Logic for Batch List
+        // Pagination, Search, and Date Filter Logic for Batch List
         const rowsPerPage = 25;
         let currentPage = 1;
 
@@ -121,11 +142,27 @@ const dashboardListHTML = `
 
         function renderTable() {
             const searchInput = document.getElementById('searchBatch').value.toLowerCase();
+            const dateFrom = document.getElementById('filterDateFrom').value;
+            const dateTo = document.getElementById('filterDateTo').value;
+            
             const rows = Array.from(document.getElementsByClassName('batch-row'));
             
             const filteredRows = rows.filter(row => {
                 const batchId = row.getAttribute('data-batchid').toLowerCase();
-                const match = batchId.includes(searchInput);
+                const rawTimestamp = parseInt(row.getAttribute('data-timestamp')) || 0;
+                const timestamp = rawTimestamp * 1000;
+                
+                const matchesSearch = batchId.includes(searchInput);
+                let matchesDate = true;
+
+                if (dateFrom && timestamp < new Date(dateFrom).setHours(0,0,0,0)) {
+                    matchesDate = false;
+                }
+                if (dateTo && timestamp > new Date(dateTo).setHours(23,59,59,999)) {
+                    matchesDate = false;
+                }
+
+                const match = matchesSearch && matchesDate;
                 row.style.display = 'none';
                 return match;
             });
@@ -157,6 +194,7 @@ const dashboardListHTML = `
 </body>
 </html>
 `
+
 const dashboardDetailHTML = `
 <!DOCTYPE html>
 <html>

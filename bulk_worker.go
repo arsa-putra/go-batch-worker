@@ -103,7 +103,13 @@ func (w *BulkWorker[T]) Submit(
 
 	if w.tracker != nil {
 		if identifiable, ok := any(job).(ItemIdentifiable); ok {
-			_ = w.tracker.TrackPendingPayload(identifiable.GetBatchID(), identifiable.GetItemID(), job)
+			batchID := identifiable.GetBatchID()
+
+			// 1. Track pending payload details for the processing dashboard
+			_ = w.tracker.TrackPendingPayload(batchID, identifiable.GetItemID(), job)
+
+			// 2. Automatically link the batch ID to this specific worker/job name
+			_ = w.tracker.LinkBatchToJob(w.Name(), batchID)
 		}
 	}
 
@@ -163,7 +169,7 @@ func (w *BulkWorker[T]) run(
 	workerID int,
 ) {
 	defer w.wg.Done()
-	// Tambahkan baris ini biar keliatan worker ID berapa yang udah nyala
+	// Log worker startup to identify which worker ID is currently running
 	log.Printf("[%s-%d] started", w.Name(), workerID)
 	for {
 		select {

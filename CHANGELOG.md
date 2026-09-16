@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0-v1.0.0.html).
 
+## [v1.2.0] - 2026-09-16
+
+### Added
+- **Auto-Linking & Indexing**: Implemented zero-config job indexing. `BulkWorker` now automatically links tracking keys to their specific job name (`w.Name()`) using Redis Sets upon payload submission.
+- **Job-Specific & Global Dashboards**: Added support for both global batch monitoring (`/batches`) and job-specific routing (`/batches/{job}`) with dynamic UI header rendering.
+- **Advanced Dashboard Filtering**: Added client-side date range filtering (`From` and `To` date pickers) alongside real-time Batch ID search and pagination.
+
+### Refactored
+- **Codebase Standardization**: Translated all remaining Indonesian inline comments to English across `tracker.go`, `bulk_worker.go`, `batch_worker.go`, and `dashboard.go` for professional convention.
+- **Memory Optimization**: Refactored dashboard list data retrieval to return a lightweight `[]*BatchState` instead of a heavy payload containing item arrays, preventing potential OOM (Out of Memory) issues on the list view.
+- **Timestamp & Date Rendering**: Optimized `CreatedAt` handling by preserving raw Unix epoch timestamps in the DOM and formatting readable local dates entirely on the client side.
+
 ## [v1.1.1] - 2026-09-09
 
 ### Fixed
