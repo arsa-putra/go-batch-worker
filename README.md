@@ -48,6 +48,8 @@ go get github.com/arsa-putra/go-batch-worker
 
 ```
 
+The framework accepts clients from `gopkg.in/redis.v5` and `github.com/redis/go-redis/v9`. For go-redis v9, it accepts `redis.UniversalClient`, so standalone, cluster, ring, and failover clients work with the same worker setup. The library API version is not a required Redis server version; server compatibility follows the client library and the commands the framework uses.
+
 ---
 
 ## 💡 Quick Start Example
@@ -69,7 +71,7 @@ import (
 
 	"github.com/arsa-putra/go-batch-worker"
 	"github.com/gorilla/mux"
-	redis "gopkg.in/redis.v5"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // 1. Batch Worker Processor Example (High-throughput logging)
@@ -117,15 +119,36 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 
 	// Setup Trackers
-	tracker := worker.NewRedisBatchTracker(rdb, worker.DefaultBatchOptions(), worker.DefaultTrackerConfig())
-	detailTracker := worker.NewRedisBatchTracker(rdb, worker.BatchOptions{
-		StoreSuccessItems: true,
-		StoreFailedItems:  true,
-	}, worker.DefaultTrackerConfig())
+	tracker := worker.NewRedisBatchTracker(
+		rdb,
+		worker.DefaultBatchOptions(),
+		worker.DefaultTrackerConfig(),
+	)
+	detailTracker := worker.NewRedisBatchTracker(
+		rdb,
+		worker.BatchOptions{
+			StoreSuccessItems: true,
+			StoreFailedItems:  true,
+		},
+		worker.DefaultTrackerConfig(),
+	)
 
 	// Setup Workers
-	batchWorker := worker.NewBatchWorker(rdb, 3, 10000, 100, 2*time.Second, &DeviceLogProcessor{}, nil)
-	bulkWorker := worker.NewBulkWorker(rdb, 5, 1000, &TransferProcessor{Tracker: detailTracker})
+	batchWorker := worker.NewBatchWorker(
+		rdb,
+		3,
+		10000,
+		100,
+		2*time.Second,
+		&DeviceLogProcessor{},
+		nil,
+	)
+	bulkWorker := worker.NewBulkWorker(
+		rdb,
+		5,
+		1000,
+		&TransferProcessor{Tracker: detailTracker},
+	)
 	bulkWorker.SetTracker(detailTracker)
 
 	// Setup Manager

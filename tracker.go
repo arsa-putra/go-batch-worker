@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 type BatchTracker interface {
@@ -38,18 +36,19 @@ type BatchTracker interface {
 }
 
 type RedisBatchTracker struct {
-	redis   *redis.Client
+	redis   *redisAdapter
 	options BatchOptions
 	config  TrackerConfig
 }
 
-func NewRedisBatchTracker(rdb *redis.Client, opts BatchOptions, config TrackerConfig) *RedisBatchTracker {
+// NewRedisBatchTracker accepts a go-redis v5 client or a go-redis v9 UniversalClient.
+func NewRedisBatchTracker(rdb interface{}, opts BatchOptions, config TrackerConfig) *RedisBatchTracker {
 	if err := config.Validate(); err != nil {
 		panic(err)
 	}
 
 	return &RedisBatchTracker{
-		redis:   rdb,
+		redis:   newRedisAdapter(rdb),
 		options: opts,
 		config:  config,
 	}
@@ -155,7 +154,7 @@ func (t *RedisBatchTracker) MarkSuccess(
 		1,
 	)
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 	if err == nil {
 		batchItemsSuccessTotal.Inc()
 	}
@@ -183,7 +182,7 @@ func (t *RedisBatchTracker) MarkFailed(
 		1,
 	)
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 	if err == nil {
 		batchItemsFailedTotal.Inc()
 	}
@@ -647,7 +646,7 @@ func (t *RedisBatchTracker) getStoredSuccessCount(
 		t.successCountKey(batchID),
 	).Int64()
 
-	if err == redis.Nil {
+	if err == errRedisNil {
 		return 0, nil
 	}
 
@@ -669,7 +668,7 @@ func (t *RedisBatchTracker) getStoredErrorCount(
 		t.failedCountKey(batchID),
 	).Int64()
 
-	if err == redis.Nil {
+	if err == errRedisNil {
 		return 0, nil
 	}
 
@@ -708,7 +707,7 @@ func (t *RedisBatchTracker) FinalizeBatch(
 		)
 	}
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 
 	return err
 }

@@ -7,14 +7,12 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 const MaxRetryCount = 3
 
 type AutoRetryWorker struct {
-	redis *redis.Client
+	redis *redisAdapter
 
 	interval time.Duration
 
@@ -35,7 +33,7 @@ type RetryableBatchWorker interface {
 }
 
 func NewAutoRetryWorker(
-	redisClient *redis.Client,
+	redisClient interface{},
 	interval time.Duration,
 ) *AutoRetryWorker {
 
@@ -44,7 +42,7 @@ func NewAutoRetryWorker(
 	}
 
 	return &AutoRetryWorker{
-		redis:    redisClient,
+		redis:    newRedisAdapter(redisClient),
 		interval: interval,
 	}
 }

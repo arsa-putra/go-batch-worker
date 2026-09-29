@@ -36,7 +36,7 @@ func (t *RedisBatchTracker) IsCancelled(
 		return false, err
 	}
 
-	return exists, nil
+	return exists > 0, nil
 }
 
 func (t *RedisBatchTracker) CompleteCancelled(

@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 const maxRecentErrors = 10
@@ -28,7 +26,7 @@ type BulkWorker[T any] struct {
 
 	tracker *RedisBatchTracker
 
-	redis *redis.Client
+	redis *redisAdapter
 
 	closed atomic.Bool
 
@@ -51,7 +49,7 @@ type ItemIdentifiable interface {
 }
 
 func NewBulkWorker[T any](
-	redisClient *redis.Client,
+	redisClient interface{},
 	workerCount int,
 	bufferSize int,
 	processor BulkProcessor[T],
@@ -73,7 +71,7 @@ func NewBulkWorker[T any](
 
 		workerCount: workerCount,
 		processor:   processor,
-		redis:       redisClient,
+		redis:       newRedisAdapter(redisClient),
 		errorCounts: make(
 			map[string]int64,
 		),

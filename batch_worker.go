@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 type BatchWorker[T any] struct {
@@ -23,7 +21,7 @@ type BatchWorker[T any] struct {
 
 	processor Processor[T]
 	tracker   BatchTracker
-	redis     *redis.Client
+	redis     *redisAdapter
 
 	closed atomic.Bool
 
@@ -34,7 +32,7 @@ type BatchWorker[T any] struct {
 }
 
 func NewBatchWorker[T any](
-	redisClient *redis.Client,
+	redisClient interface{},
 	workerCount int,
 	bufferSize int,
 	batchSize int,
@@ -65,7 +63,7 @@ func NewBatchWorker[T any](
 		flushEvery:  flushEvery,
 		processor:   processor,
 		tracker:     tracker,
-		redis:       redisClient,
+		redis:       newRedisAdapter(redisClient),
 		stats: WorkerStats{
 			Name: processor.Name(),
 		},

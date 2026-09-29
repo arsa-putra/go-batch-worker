@@ -3,8 +3,6 @@ package worker
 import (
 	"encoding/json"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 type WebhookRetryState struct {
@@ -24,7 +22,7 @@ func webhookRetryStateKey(
 }
 
 func SaveWebhookRetryState(
-	rdb *redis.Client,
+	rdb interface{},
 	state *WebhookRetryState,
 ) error {
 
@@ -36,7 +34,7 @@ func SaveWebhookRetryState(
 		return err
 	}
 
-	return rdb.Set(
+	return newRedisAdapter(rdb).Set(
 		webhookRetryStateKey(
 			state.BatchID,
 		),
@@ -46,11 +44,11 @@ func SaveWebhookRetryState(
 }
 
 func LoadWebhookRetryState(
-	rdb *redis.Client,
+	rdb interface{},
 	batchID string,
 ) (*WebhookRetryState, error) {
 
-	raw, err := rdb.Get(
+	raw, err := newRedisAdapter(rdb).Get(
 		webhookRetryStateKey(
 			batchID,
 		),
@@ -73,11 +71,11 @@ func LoadWebhookRetryState(
 }
 
 func DeleteWebhookRetryState(
-	rdb *redis.Client,
+	rdb interface{},
 	batchID string,
 ) error {
 
-	return rdb.Del(
+	return newRedisAdapter(rdb).Del(
 		webhookRetryStateKey(
 			batchID,
 		),
@@ -85,10 +83,10 @@ func DeleteWebhookRetryState(
 }
 
 func FindWebhookRetryStates(
-	rdb *redis.Client,
+	rdb interface{},
 ) ([]*WebhookRetryState, error) {
 
-	keys, err := rdb.Keys(
+	keys, err := newRedisAdapter(rdb).Keys(
 		"worker:webhook:retry:*",
 	).Result()
 
@@ -104,7 +102,7 @@ func FindWebhookRetryStates(
 
 	for _, key := range keys {
 
-		raw, err := rdb.Get(
+		raw, err := newRedisAdapter(rdb).Get(
 			key,
 		).Result()
 
@@ -139,11 +137,11 @@ func webhookRetryLockKey(
 }
 
 func ClaimWebhookRetry(
-	rdb *redis.Client,
+	rdb interface{},
 	batchID string,
 ) (bool, error) {
 
-	return rdb.SetNX(
+	return newRedisAdapter(rdb).SetNX(
 		webhookRetryLockKey(
 			batchID,
 		),
@@ -153,11 +151,11 @@ func ClaimWebhookRetry(
 }
 
 func ReleaseWebhookRetry(
-	rdb *redis.Client,
+	rdb interface{},
 	batchID string,
 ) error {
 
-	return rdb.Del(
+	return newRedisAdapter(rdb).Del(
 		webhookRetryLockKey(
 			batchID,
 		),
