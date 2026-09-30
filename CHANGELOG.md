@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0-v1.0.0.html).
 
+## [v1.3.0] - 2026-09-30
+
+### Added
+- Added support for both `gopkg.in/redis.v5` clients and `go-redis/v9` clients. The internal adapter keeps context handling out of framework usage and preserves existing Redis operations.
+- Added a non-retryable failure path via `SkipRetry(err)` and `CompleteFailedWithSkipRetry`.
+- Added per-worker `RetryConfig` for failed-queue retry limits and `BatchWorker` immediate processor attempts. Defaults preserve the previous limits.
+- Delayed bulk batch completion callbacks until each retryable item reaches a terminal result.
+- Added item-level `waiting`, `processing`, `waiting for retry`, and `retrying` statuses with clear retry attempt numbers to the batch detail dashboard.
+
 ## [v1.2.0] - 2026-09-16
 
 ### Added

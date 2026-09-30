@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	redis "gopkg.in/redis.v5"
+	redis "github.com/redis/go-redis/v9"
 )
 
 type RetryTestPayload struct {
@@ -52,7 +52,7 @@ func TestRetryFailedJob_DLQ(
 		},
 	)
 
-	rdb.FlushDb()
+	rdb.FlushDB(context.Background())
 
 	w := NewBulkWorker(
 		rdb,
@@ -92,7 +92,7 @@ func TestRetryFailedJob_DLQ(
 		300 * time.Millisecond,
 	)
 
-	total, _ := rdb.LLen(
+	total, _ := rdb.LLen(context.Background(),
 		fmt.Sprintf(
 			"worker:%s:failed:list",
 			w.Name(),

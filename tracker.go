@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 type BatchTracker interface {
@@ -37,19 +35,26 @@ type BatchTracker interface {
 	LoadPendingPayloads(batchID string) ([]map[string]interface{}, error)
 }
 
+// SkipRetryBatchTracker is implemented by trackers that can record a failed
+// item which must not be scheduled for retry.
+type SkipRetryBatchTracker interface {
+	CompleteFailedWithSkipRetry(batchID string, result BatchItemResult) error
+}
+
 type RedisBatchTracker struct {
-	redis   *redis.Client
+	redis   *redisAdapter
 	options BatchOptions
 	config  TrackerConfig
 }
 
-func NewRedisBatchTracker(rdb *redis.Client, opts BatchOptions, config TrackerConfig) *RedisBatchTracker {
+// NewRedisBatchTracker accepts a go-redis v5 client or a go-redis v9 UniversalClient.
+func NewRedisBatchTracker(rdb interface{}, opts BatchOptions, config TrackerConfig) *RedisBatchTracker {
 	if err := config.Validate(); err != nil {
 		panic(err)
 	}
 
 	return &RedisBatchTracker{
-		redis:   rdb,
+		redis:   newRedisAdapter(rdb),
 		options: opts,
 		config:  config,
 	}
@@ -155,7 +160,7 @@ func (t *RedisBatchTracker) MarkSuccess(
 		1,
 	)
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 	if err == nil {
 		batchItemsSuccessTotal.Inc()
 	}
@@ -183,7 +188,7 @@ func (t *RedisBatchTracker) MarkFailed(
 		1,
 	)
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 	if err == nil {
 		batchItemsFailedTotal.Inc()
 	}
@@ -426,27 +431,6 @@ func (t *RedisBatchTracker) BuildResult(
 		return nil, err
 	}
 
-	// --- REMOVE DUPLICATES & CROSS-CONTAMINATION ---
-	// Filter out duplicate failures
-	seenFailed := make(map[string]bool)
-	var cleanFailed []BatchItemResult
-	for _, item := range failedItems {
-		if !seenFailed[item.Key] {
-			seenFailed[item.Key] = true
-			cleanFailed = append(cleanFailed, item)
-		}
-	}
-
-	seenSuccess := make(map[string]bool)
-	var cleanSuccess []BatchItemResult
-	for _, item := range successItems {
-		// Filter out duplicates and ensure items present in failed do not appear in success
-		if !seenSuccess[item.Key] && !seenFailed[item.Key] {
-			seenSuccess[item.Key] = true
-			cleanSuccess = append(cleanSuccess, item)
-		}
-	}
-
 	finishedAt, _ := t.redis.HGet(
 		t.stateKey(batchID),
 		"finished_at",
@@ -462,8 +446,8 @@ func (t *RedisBatchTracker) BuildResult(
 		)
 
 	// Calculate clean counts and dynamic processing tasks
-	cleanSuccessCount := int64(len(cleanSuccess))
-	cleanFailedCount := int64(len(cleanFailed))
+	cleanSuccessCount := int64(len(successItems))
+	cleanFailedCount := int64(len(failedItems))
 	doneCount := cleanSuccessCount + cleanFailedCount
 
 	processing := state.Total - doneCount
@@ -495,8 +479,8 @@ func (t *RedisBatchTracker) BuildResult(
 
 		FinishedAt: finishedAt,
 
-		SuccessItems:    cleanSuccess,
-		FailedItems:     cleanFailed,
+		SuccessItems:    successItems,
+		FailedItems:     failedItems,
 		ProcessingItems: processingItems,
 
 		StoredSuccesses: storedSuccesses,
@@ -530,8 +514,24 @@ func (t *RedisBatchTracker) CompleteFailed(
 	batchID string,
 	result BatchItemResult,
 ) error {
+	return t.completeFailed(batchID, result, false)
+}
+
+func (t *RedisBatchTracker) CompleteFailedWithSkipRetry(
+	batchID string,
+	result BatchItemResult,
+) error {
+	return t.completeFailed(batchID, result, true)
+}
+
+func (t *RedisBatchTracker) completeFailed(
+	batchID string,
+	result BatchItemResult,
+	skipRetry bool,
+) error {
 
 	result.Success = false
+	result.SkipRetry = skipRetry
 
 	if err := t.SaveResult(
 		batchID,
@@ -647,7 +647,7 @@ func (t *RedisBatchTracker) getStoredSuccessCount(
 		t.successCountKey(batchID),
 	).Int64()
 
-	if err == redis.Nil {
+	if err == errRedisNil {
 		return 0, nil
 	}
 
@@ -669,7 +669,7 @@ func (t *RedisBatchTracker) getStoredErrorCount(
 		t.failedCountKey(batchID),
 	).Int64()
 
-	if err == redis.Nil {
+	if err == errRedisNil {
 		return 0, nil
 	}
 
@@ -708,7 +708,7 @@ func (t *RedisBatchTracker) FinalizeBatch(
 		)
 	}
 
-	_, err := pipe.Exec()
+	err := pipe.Exec()
 
 	return err
 }
@@ -791,6 +791,37 @@ func (t *RedisBatchTracker) processingDataKey(batchID string) string {
 	return fmt.Sprintf("worker:batch:%s:processing_data", batchID)
 }
 
+func (t *RedisBatchTracker) processingStatusKey(batchID string) string {
+	return fmt.Sprintf("worker:batch:%s:processing_status", batchID)
+}
+
+type pendingPayloadStatus struct {
+	Status           string `json:"status"`
+	RetryAttempt     int    `json:"retry_attempt"`
+	LegacyRetryCount int    `json:"retry_count,omitempty"`
+}
+
+// UpdatePendingPayloadStatus records an item's waiting, processing, or retry state.
+func (t *RedisBatchTracker) UpdatePendingPayloadStatus(
+	batchID string,
+	itemID string,
+	status string,
+	retryAttempt int,
+) error {
+	payload, err := json.Marshal(pendingPayloadStatus{
+		Status:       status,
+		RetryAttempt: retryAttempt,
+	})
+	if err != nil {
+		return err
+	}
+	return t.redis.HSet(
+		t.processingStatusKey(batchID),
+		itemID,
+		string(payload),
+	).Err()
+}
+
 // Track pending payload with full JSON data
 func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, payload interface{}) error {
 	data, err := json.Marshal(payload)
@@ -798,12 +829,18 @@ func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, p
 		return err
 	}
 	// Store in Redis Hash: Field = itemID, Value = JSON Payload string
-	return t.redis.HSet(t.processingDataKey(batchID), itemID, string(data)).Err()
+	if err := t.redis.HSet(t.processingDataKey(batchID), itemID, string(data)).Err(); err != nil {
+		return err
+	}
+	return t.UpdatePendingPayloadStatus(batchID, itemID, "waiting", 0)
 }
 
 // Remove payload from processing hash when completed
 func (t *RedisBatchTracker) RemovePendingPayload(batchID string, itemID string) error {
-	return t.redis.HDel(t.processingDataKey(batchID), itemID).Err()
+	if err := t.redis.HDel(t.processingDataKey(batchID), itemID).Err(); err != nil {
+		return err
+	}
+	return t.redis.HDel(t.processingStatusKey(batchID), itemID).Err()
 }
 
 // Load all processing payloads as a map or slice of structs/maps
@@ -812,11 +849,31 @@ func (t *RedisBatchTracker) LoadPendingPayloads(batchID string) ([]map[string]in
 	if err != nil {
 		return nil, err
 	}
+	statusMap, err := t.redis.HGetAll(t.processingStatusKey(batchID)).Result()
+	if err != nil {
+		return nil, err
+	}
 
 	var payloads []map[string]interface{}
-	for _, rawJSON := range resultMap {
+	for itemID, rawJSON := range resultMap {
 		var item map[string]interface{}
 		if json.Unmarshal([]byte(rawJSON), &item) == nil {
+			status := pendingPayloadStatus{Status: "processing"}
+			if rawStatus, ok := statusMap[itemID]; ok {
+				_ = json.Unmarshal([]byte(rawStatus), &status)
+			}
+			if status.RetryAttempt == 0 && status.LegacyRetryCount > 0 {
+				status.RetryAttempt = status.LegacyRetryCount
+			}
+			if status.Status == "retrying" && status.RetryAttempt == 0 {
+				status.Status = "waiting_retry"
+				status.RetryAttempt = 1
+			}
+			if status.Status == "" {
+				status.Status = "processing"
+			}
+			item["status"] = status.Status
+			item["retry_attempt"] = status.RetryAttempt
 			payloads = append(payloads, item)
 		}
 	}

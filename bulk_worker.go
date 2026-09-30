@@ -9,8 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 const maxRecentErrors = 10
@@ -21,6 +19,7 @@ type BulkWorker[T any] struct {
 	wg sync.WaitGroup
 
 	workerCount int
+	retryConfig RetryConfig
 
 	processor BulkProcessor[T]
 
@@ -28,7 +27,7 @@ type BulkWorker[T any] struct {
 
 	tracker *RedisBatchTracker
 
-	redis *redis.Client
+	redis *redisAdapter
 
 	closed atomic.Bool
 
@@ -51,10 +50,11 @@ type ItemIdentifiable interface {
 }
 
 func NewBulkWorker[T any](
-	redisClient *redis.Client,
+	redisClient interface{},
 	workerCount int,
 	bufferSize int,
 	processor BulkProcessor[T],
+	retryConfigs ...RetryConfig,
 ) *BulkWorker[T] {
 
 	if workerCount <= 0 {
@@ -72,8 +72,9 @@ func NewBulkWorker[T any](
 		),
 
 		workerCount: workerCount,
+		retryConfig: normalizeRetryConfig(retryConfigs),
 		processor:   processor,
-		redis:       redisClient,
+		redis:       newRedisAdapter(redisClient),
 		errorCounts: make(
 			map[string]int64,
 		),
@@ -192,6 +193,7 @@ func (w *BulkWorker[T]) run(
 				Set(float64(len(w.ch)))
 			batchID, ok := GetBatchID(job)
 			if ok && w.tracker != nil {
+				w.updatePendingPayloadStatus(job, "processing", 0)
 				cancelled, err :=
 					w.tracker.IsCancelled(
 						batchID,
@@ -252,17 +254,20 @@ func (w *BulkWorker[T]) run(
 			}()
 
 			if err != nil {
-				w.markFailed(
-					job,
-					err,
-				)
-				w.tryComplete(
-					job,
-				)
+				if errors.Is(err, ErrSkipRetry) {
+					w.markFailed(job, err)
+					w.tryComplete(job)
+					continue
+				}
+
+				// Leave retryable items in processing until a retry reaches a
+				// terminal result so completion callbacks run only after retries.
+				w.markFailedAttempt(job, err)
 				w.saveFailedJob(
 					job,
 					err,
 				)
+				w.updatePendingPayloadStatus(job, "waiting_retry", 1)
 
 				continue
 			}
@@ -299,6 +304,7 @@ func (w *BulkWorker[T]) saveFailedJob(
 	job T,
 	err error,
 ) {
+	batchID, _ := GetBatchID(job)
 	id := fmt.Sprintf(
 		"%d",
 		time.Now().UnixNano(),
@@ -306,6 +312,7 @@ func (w *BulkWorker[T]) saveFailedJob(
 
 	data := FailedJob[T]{
 		ID:          id,
+		BatchID:     batchID,
 		CreatedAt:   time.Now(),
 		Error:       err.Error(),
 		Status:      "pending",
@@ -463,7 +470,10 @@ func (w *BulkWorker[T]) RetryFailedJob(
 	if job.IsDead {
 		return ErrDeadJob
 	}
-
+	batchID := job.BatchID
+	if batchID == "" {
+		batchID, _ = GetBatchID(job.Job)
+	}
 	if w.limiter != nil &&
 		w.limiter.DB != nil {
 
@@ -478,6 +488,7 @@ func (w *BulkWorker[T]) RetryFailedJob(
 			w.limiter.DB.Release(1)
 		}()
 	}
+	w.updatePendingPayloadStatusForBatch(job.Job, batchID, "retrying", job.RetryCount+1)
 
 	workerActiveJobs.WithLabelValues(w.Name()).Inc()
 	defer workerActiveJobs.WithLabelValues(w.Name()).Dec()
@@ -496,15 +507,32 @@ func (w *BulkWorker[T]) RetryFailedJob(
 
 		job.RetryCount++
 		job.LastRetryAt = time.Now()
+		if errors.Is(err, ErrSkipRetry) {
+			now := time.Now()
+			job.IsDead = true
+			job.SkipRetry = true
+			job.DeadAt = &now
+			job.Status = "failed_skip_retry"
 
-		if job.RetryCount >= MaxRetryCount {
+			payload, _ := json.Marshal(job)
+			_ = w.redis.Set(dataKey, payload, 0).Err()
+			w.recordFailedForBatch(job.Job, batchID, err)
+			w.tryCompleteBatch(batchID)
+			return ErrDeadJob
+		}
+
+		if job.RetryCount >= w.retryConfig.MaxRetries {
 
 			now := time.Now()
 
 			job.IsDead = true
 			job.DeadAt = &now
 			job.Status = "dead"
-
+			payload, _ := json.Marshal(job)
+			_ = w.redis.Set(dataKey, payload, 0).Err()
+			w.recordFailedForBatch(job.Job, batchID, err)
+			w.tryCompleteBatch(batchID)
+			return ErrDeadJob
 		} else {
 
 			job.Status = "pending"
@@ -517,6 +545,7 @@ func (w *BulkWorker[T]) RetryFailedJob(
 			payload,
 			0,
 		).Err()
+		w.updatePendingPayloadStatusForBatch(job.Job, batchID, "waiting_retry", job.RetryCount+1)
 		return err
 	}
 
@@ -537,12 +566,8 @@ func (w *BulkWorker[T]) RetryFailedJob(
 		WithLabelValues(w.Name()).
 		Set(float64(total))
 
-	w.markSuccess(
-		job.Job,
-	)
-	w.tryComplete(
-		job.Job,
-	)
+	w.markSuccessForBatch(job.Job, batchID)
+	w.tryCompleteBatch(batchID)
 	workerRetrySuccessTotal.
 		WithLabelValues(w.Name()).
 		Inc()
@@ -551,6 +576,36 @@ func (w *BulkWorker[T]) RetryFailedJob(
 
 func (w *BulkWorker[T]) QueueSize() int {
 	return len(w.ch)
+}
+
+func (w *BulkWorker[T]) updatePendingPayloadStatus(
+	job T,
+	status string,
+	retryAttempt int,
+) {
+	batchID, _ := GetBatchID(job)
+	w.updatePendingPayloadStatusForBatch(job, batchID, status, retryAttempt)
+}
+
+func (w *BulkWorker[T]) updatePendingPayloadStatusForBatch(
+	job T,
+	batchID string,
+	status string,
+	retryAttempt int,
+) {
+	if w.tracker == nil || batchID == "" {
+		return
+	}
+	identifiable, ok := any(job).(ItemIdentifiable)
+	if !ok {
+		return
+	}
+	_ = w.tracker.UpdatePendingPayloadStatus(
+		batchID,
+		identifiable.GetItemID(),
+		status,
+		retryAttempt,
+	)
 }
 
 func (w *BulkWorker[T]) QueueCapacity() int {
@@ -566,6 +621,11 @@ func (w *BulkWorker[T]) SetTracker(tracker *RedisBatchTracker) {
 }
 
 func (w *BulkWorker[T]) markSuccess(job T) {
+	batchID, _ := GetBatchID(job)
+	w.markSuccessForBatch(job, batchID)
+}
+
+func (w *BulkWorker[T]) markSuccessForBatch(job T, batchID string) {
 	w.success.Add(1)
 	w.processed.Add(1)
 
@@ -574,12 +634,7 @@ func (w *BulkWorker[T]) markSuccess(job T) {
 	workerSuccess.WithLabelValues(w.Name()).Inc()
 	workerLastSuccessTimestamp.WithLabelValues(w.Name()).Set(float64(time.Now().Unix()))
 
-	if w.tracker == nil {
-		return
-	}
-
-	batchID, ok := GetBatchID(job)
-	if !ok {
+	if w.tracker == nil || batchID == "" {
 		return
 	}
 	if trackable, ok := any(job).(ResultTrackable); ok {
@@ -597,6 +652,11 @@ func (w *BulkWorker[T]) markSuccess(job T) {
 }
 
 func (w *BulkWorker[T]) markFailed(job T, err error) {
+	w.markFailedAttempt(job, err)
+	w.recordFailed(job, err)
+}
+
+func (w *BulkWorker[T]) markFailedAttempt(job T, err error) {
 	w.failed.Add(1)
 	w.processed.Add(1)
 
@@ -606,21 +666,24 @@ func (w *BulkWorker[T]) markFailed(job T, err error) {
 	workerProcessed.WithLabelValues(w.Name()).Inc()
 	workerFailed.WithLabelValues(w.Name()).Inc()
 	workerLastFailureTimestamp.WithLabelValues(w.Name()).Set(float64(time.Now().Unix()))
+}
 
-	if w.tracker == nil {
-		return
-	}
+func (w *BulkWorker[T]) recordFailed(job T, err error) {
+	batchID, _ := GetBatchID(job)
+	w.recordFailedForBatch(job, batchID, err)
+}
 
-	batchID, ok := GetBatchID(job)
-	if !ok {
+func (w *BulkWorker[T]) recordFailedForBatch(job T, batchID string, err error) {
+	if w.tracker == nil || batchID == "" {
 		return
 	}
 	if trackable, ok := any(job).(ResultTrackable); ok {
-
-		_ = w.tracker.CompleteFailed(
-			batchID,
-			trackable.FailedResult(err),
-		)
+		result := trackable.FailedResult(err)
+		if errors.Is(err, ErrSkipRetry) {
+			_ = w.tracker.CompleteFailedWithSkipRetry(batchID, result)
+		} else {
+			_ = w.tracker.CompleteFailed(batchID, result)
+		}
 
 		return
 	}
@@ -632,13 +695,12 @@ func (w *BulkWorker[T]) markFailed(job T, err error) {
 func (w *BulkWorker[T]) tryComplete(
 	job T,
 ) {
+	batchID, _ := GetBatchID(job)
+	w.tryCompleteBatch(batchID)
+}
 
-	if w.tracker == nil {
-		return
-	}
-
-	batchID, ok := GetBatchID(job)
-	if !ok {
+func (w *BulkWorker[T]) tryCompleteBatch(batchID string) {
+	if w.tracker == nil || batchID == "" {
 		return
 	}
 

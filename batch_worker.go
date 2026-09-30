@@ -3,13 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 type BatchWorker[T any] struct {
@@ -20,10 +19,11 @@ type BatchWorker[T any] struct {
 	workerCount int
 	batchSize   int
 	flushEvery  time.Duration
+	retryConfig RetryConfig
 
 	processor Processor[T]
 	tracker   BatchTracker
-	redis     *redis.Client
+	redis     *redisAdapter
 
 	closed atomic.Bool
 
@@ -34,13 +34,14 @@ type BatchWorker[T any] struct {
 }
 
 func NewBatchWorker[T any](
-	redisClient *redis.Client,
+	redisClient interface{},
 	workerCount int,
 	bufferSize int,
 	batchSize int,
 	flushEvery time.Duration,
 	processor Processor[T],
 	tracker BatchTracker,
+	retryConfigs ...RetryConfig,
 ) *BatchWorker[T] {
 	if workerCount <= 0 {
 		workerCount = 1
@@ -63,9 +64,10 @@ func NewBatchWorker[T any](
 		workerCount: workerCount,
 		batchSize:   batchSize,
 		flushEvery:  flushEvery,
+		retryConfig: normalizeRetryConfig(retryConfigs),
 		processor:   processor,
 		tracker:     tracker,
-		redis:       redisClient,
+		redis:       newRedisAdapter(redisClient),
 		stats: WorkerStats{
 			Name: processor.Name(),
 		},
@@ -322,7 +324,7 @@ func (w *BatchWorker[T]) saveBatch(
 	ctx context.Context,
 	items []T,
 ) error {
-	err := retry(3, func() error {
+	err := retry(w.retryConfig.ProcessorAttempts, func() error {
 		if w.limiter != nil &&
 			w.limiter.DB != nil {
 			if err := w.limiter.DB.Acquire(ctx, 1); err != nil {
@@ -351,10 +353,9 @@ func (w *BatchWorker[T]) saveBatch(
 	})
 
 	if err != nil {
-		w.saveFailedBatch(
-			items,
-			err,
-		)
+		if !errors.Is(err, ErrSkipRetry) {
+			w.saveFailedBatch(items, err)
+		}
 
 		return err
 	}
@@ -546,8 +547,19 @@ func (w *BatchWorker[T]) RetryFailedBatch(id string) error {
 		retryFailedMetric.Inc()
 		batch.RetryCount++
 		batch.LastRetryAt = time.Now()
+		if errors.Is(err, ErrSkipRetry) {
+			now := time.Now()
+			batch.IsDead = true
+			batch.SkipRetry = true
+			batch.DeadAt = &now
+			batch.Status = "failed_skip_retry"
 
-		if batch.RetryCount >= MaxRetryCount {
+			payload, _ := json.Marshal(batch)
+			_ = w.redis.Set(dataKey, payload, 0).Err()
+			return ErrDeadJob
+		}
+
+		if batch.RetryCount >= w.retryConfig.MaxRetries {
 
 			now := time.Now()
 

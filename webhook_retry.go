@@ -3,8 +3,6 @@ package worker
 import (
 	"math/rand"
 	"time"
-
-	redis "gopkg.in/redis.v5"
 )
 
 func retryDelay(
@@ -27,7 +25,7 @@ func retryDelay(
 }
 
 func ScheduleWebhookRetry(
-	rdb *redis.Client,
+	rdb interface{},
 	batchID string,
 	attempt int,
 ) error {

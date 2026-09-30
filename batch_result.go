@@ -1,10 +1,11 @@
 package worker
 
 type BatchItemResult struct {
-	Key     string      `json:"key"`
-	Success bool        `json:"success"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Key       string      `json:"key"`
+	Success   bool        `json:"success"`
+	SkipRetry bool        `json:"skip_retry,omitempty"`
+	Message   string      `json:"message"`
+	Data      interface{} `json:"data,omitempty"`
 }
 
 type BatchResult struct {

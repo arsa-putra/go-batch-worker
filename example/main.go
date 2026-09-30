@@ -82,7 +82,6 @@ func (p TransferUserPayload) FailedResult(err error) worker.BatchItemResult {
 }
 
 type TransferUserProcessor struct {
-	Tracker worker.BatchTracker
 }
 
 func (p *TransferUserProcessor) Name() string {
@@ -93,16 +92,17 @@ func (p *TransferUserProcessor) Process(ctx context.Context, job TransferUserPay
 	// Add artificial delay so processing state can be observed on dashboard
 	time.Sleep(10 * time.Second)
 
-	if job.Email == "error@example.com" {
-		if p.Tracker != nil {
-			_ = p.Tracker.CompleteFailed(job.BatchID, worker.BatchItemResult{
-				Key:     job.Email,
-				Success: false,
-				Message: "The transfer can only be done to an organization within the same country or below.",
-				Data:    job,
-			})
-		}
-		return nil
+	switch job.Email {
+	case "error@example.com":
+		return worker.SkipRetry(
+			fmt.Errorf(
+				"the transfer can only be done to an organization within the same country or below",
+			))
+	case "user1@example.com":
+		return fmt.Errorf(
+			"the transfer can only be done to an organization within the same country or below",
+		)
+	default:
 	}
 
 	fmt.Printf("[BulkWorker] Successfully transferred user: %s\n", job.Email)
@@ -167,7 +167,10 @@ func main() {
 		rdb,
 		1,
 		1000,
-		&TransferUserProcessor{Tracker: detailTracker},
+		&TransferUserProcessor{},
+		worker.RetryConfig{
+			MaxRetries: 2,
+		},
 	)
 	transferUser.SetTracker(detailTracker)
 	transferUser.SetCompletionHandler(completion)
