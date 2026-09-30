@@ -4,6 +4,7 @@ import "time"
 
 type FailedJob[T any] struct {
 	ID        string    `json:"id"`
+	BatchID   string    `json:"batch_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	Error     string    `json:"error"`
 	Status    string    `json:"status"`

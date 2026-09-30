@@ -92,10 +92,17 @@ func (p *TransferUserProcessor) Process(ctx context.Context, job TransferUserPay
 	// Add artificial delay so processing state can be observed on dashboard
 	time.Sleep(10 * time.Second)
 
-	if job.Email == "error@example.com" {
-		return worker.SkipRetry(fmt.Errorf(
+	switch job.Email {
+	case "error@example.com":
+		return worker.SkipRetry(
+			fmt.Errorf(
+				"the transfer can only be done to an organization within the same country or below",
+			))
+	case "user1@example.com":
+		return fmt.Errorf(
 			"the transfer can only be done to an organization within the same country or below",
-		))
+		)
+	default:
 	}
 
 	fmt.Printf("[BulkWorker] Successfully transferred user: %s\n", job.Email)
@@ -162,7 +169,7 @@ func main() {
 		1000,
 		&TransferUserProcessor{},
 		worker.RetryConfig{
-			MaxRetries: 1,
+			MaxRetries: 2,
 		},
 	)
 	transferUser.SetTracker(detailTracker)

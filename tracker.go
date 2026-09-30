@@ -791,6 +791,37 @@ func (t *RedisBatchTracker) processingDataKey(batchID string) string {
 	return fmt.Sprintf("worker:batch:%s:processing_data", batchID)
 }
 
+func (t *RedisBatchTracker) processingStatusKey(batchID string) string {
+	return fmt.Sprintf("worker:batch:%s:processing_status", batchID)
+}
+
+type pendingPayloadStatus struct {
+	Status           string `json:"status"`
+	RetryAttempt     int    `json:"retry_attempt"`
+	LegacyRetryCount int    `json:"retry_count,omitempty"`
+}
+
+// UpdatePendingPayloadStatus records an item's waiting, processing, or retry state.
+func (t *RedisBatchTracker) UpdatePendingPayloadStatus(
+	batchID string,
+	itemID string,
+	status string,
+	retryAttempt int,
+) error {
+	payload, err := json.Marshal(pendingPayloadStatus{
+		Status:       status,
+		RetryAttempt: retryAttempt,
+	})
+	if err != nil {
+		return err
+	}
+	return t.redis.HSet(
+		t.processingStatusKey(batchID),
+		itemID,
+		string(payload),
+	).Err()
+}
+
 // Track pending payload with full JSON data
 func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, payload interface{}) error {
 	data, err := json.Marshal(payload)
@@ -798,12 +829,18 @@ func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, p
 		return err
 	}
 	// Store in Redis Hash: Field = itemID, Value = JSON Payload string
-	return t.redis.HSet(t.processingDataKey(batchID), itemID, string(data)).Err()
+	if err := t.redis.HSet(t.processingDataKey(batchID), itemID, string(data)).Err(); err != nil {
+		return err
+	}
+	return t.UpdatePendingPayloadStatus(batchID, itemID, "waiting", 0)
 }
 
 // Remove payload from processing hash when completed
 func (t *RedisBatchTracker) RemovePendingPayload(batchID string, itemID string) error {
-	return t.redis.HDel(t.processingDataKey(batchID), itemID).Err()
+	if err := t.redis.HDel(t.processingDataKey(batchID), itemID).Err(); err != nil {
+		return err
+	}
+	return t.redis.HDel(t.processingStatusKey(batchID), itemID).Err()
 }
 
 // Load all processing payloads as a map or slice of structs/maps
@@ -812,11 +849,31 @@ func (t *RedisBatchTracker) LoadPendingPayloads(batchID string) ([]map[string]in
 	if err != nil {
 		return nil, err
 	}
+	statusMap, err := t.redis.HGetAll(t.processingStatusKey(batchID)).Result()
+	if err != nil {
+		return nil, err
+	}
 
 	var payloads []map[string]interface{}
-	for _, rawJSON := range resultMap {
+	for itemID, rawJSON := range resultMap {
 		var item map[string]interface{}
 		if json.Unmarshal([]byte(rawJSON), &item) == nil {
+			status := pendingPayloadStatus{Status: "processing"}
+			if rawStatus, ok := statusMap[itemID]; ok {
+				_ = json.Unmarshal([]byte(rawStatus), &status)
+			}
+			if status.RetryAttempt == 0 && status.LegacyRetryCount > 0 {
+				status.RetryAttempt = status.LegacyRetryCount
+			}
+			if status.Status == "retrying" && status.RetryAttempt == 0 {
+				status.Status = "waiting_retry"
+				status.RetryAttempt = 1
+			}
+			if status.Status == "" {
+				status.Status = "processing"
+			}
+			item["status"] = status.Status
+			item["retry_attempt"] = status.RetryAttempt
 			payloads = append(payloads, item)
 		}
 	}

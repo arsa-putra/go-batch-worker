@@ -24,6 +24,10 @@ const dashboardListHTML = `
         .badge { padding: 6px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; display: inline-block; text-transform: uppercase; letter-spacing: 0.5px; }
         .status-running { color: #004085; background: #cce5ff; }
         .status-completed { color: #155724; background: #d4edda; }
+        .status-waiting { color: #495057; background: #e9ecef; }
+        .status-processing { color: #8a6100; background: #fff3bf; }
+        .status-waiting_retry { color: #9c5700; background: #ffe8cc; }
+        .status-retrying { color: #5f3dc4; background: #e5dbff; }
         .status-failed { color: #c92a2a; background: #ffc9c9; }
         
         .col-action { width: 120px; text-align: center; white-space: nowrap; }
@@ -210,6 +214,10 @@ const dashboardDetailHTML = `
         .badge { padding: 4px 8px; border-radius: 4px; font-weight: 700; font-size: 12px; display: inline-block; text-transform: capitalize; }
         .status-running { color: #004085; background: #cce5ff; }
         .status-completed { color: #155724; background: #d4edda; }
+        .status-waiting { color: #495057; background: #e9ecef; }
+        .status-processing { color: #8a6100; background: #fff3bf; }
+        .status-waiting_retry { color: #9c5700; background: #ffe8cc; }
+        .status-retrying { color: #5f3dc4; background: #e5dbff; }
         
         /* Tab navigation styles */
         .tab-headers { display: flex; gap: 10px; border-bottom: 2px solid #e9ecef; margin-bottom: 20px; }
@@ -286,6 +294,8 @@ const dashboardDetailHTML = `
                 <thead>
                 <tr>
                     <th>Email / Key</th>
+                    <th>Status</th>
+                    <th>Retry Attempt</th>
                     <th>Payload Details</th>
                 </tr>
                 </thead>
@@ -293,6 +303,8 @@ const dashboardDetailHTML = `
                     {{range .ProcessingItems}}
                     <tr class="processing-row" data-email="{{.}}">
                         <td style="font-family: monospace; font-weight: bold; width: 30%;">{{.email}}</td>
+                        <td><span class="badge status-{{.status}}">{{if eq .status "waiting_retry"}}Waiting for retry{{else if eq .status "retrying"}}Retrying{{else}}{{.status}}{{end}}</span></td>
+                        <td>{{if or (eq .status "waiting_retry") (eq .status "retrying")}}{{.retry_attempt}}{{else}}—{{end}}</td>
                         <td>
                             <code style="font-size: 12px; color: #495057; background: #f8f9fa; padding: 4px 8px; border-radius: 4px; display: block; max-height: 60px; overflow-y: auto;">
                                 {{printf "%v" .}}
@@ -301,7 +313,7 @@ const dashboardDetailHTML = `
                     </tr>
                     {{else}}
                     <tr>
-                        <td style="color: #adb5bd; font-style: italic;" colspan="1">No items currently processing.</td>
+                        <td style="color: #adb5bd; font-style: italic;" colspan="4">No items currently processing.</td>
                     </tr>
                     {{end}}
                 </tbody>
