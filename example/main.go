@@ -161,6 +161,9 @@ func main() {
 		1,
 		1000,
 		&TransferUserProcessor{},
+		worker.RetryConfig{
+			MaxRetries: 1,
+		},
 	)
 	transferUser.SetTracker(detailTracker)
 	transferUser.SetCompletionHandler(completion)

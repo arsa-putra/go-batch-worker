@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const MaxRetryCount = 3
-
 type AutoRetryWorker struct {
 	redis *redisAdapter
 

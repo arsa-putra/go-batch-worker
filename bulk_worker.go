@@ -19,6 +19,7 @@ type BulkWorker[T any] struct {
 	wg sync.WaitGroup
 
 	workerCount int
+	retryConfig RetryConfig
 
 	processor BulkProcessor[T]
 
@@ -53,6 +54,7 @@ func NewBulkWorker[T any](
 	workerCount int,
 	bufferSize int,
 	processor BulkProcessor[T],
+	retryConfigs ...RetryConfig,
 ) *BulkWorker[T] {
 
 	if workerCount <= 0 {
@@ -70,6 +72,7 @@ func NewBulkWorker[T any](
 		),
 
 		workerCount: workerCount,
+		retryConfig: normalizeRetryConfig(retryConfigs),
 		processor:   processor,
 		redis:       newRedisAdapter(redisClient),
 		errorCounts: make(
@@ -509,7 +512,7 @@ func (w *BulkWorker[T]) RetryFailedJob(
 			return ErrDeadJob
 		}
 
-		if job.RetryCount >= MaxRetryCount {
+		if job.RetryCount >= w.retryConfig.MaxRetries {
 
 			now := time.Now()
 

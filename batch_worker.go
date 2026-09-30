@@ -19,6 +19,7 @@ type BatchWorker[T any] struct {
 	workerCount int
 	batchSize   int
 	flushEvery  time.Duration
+	retryConfig RetryConfig
 
 	processor Processor[T]
 	tracker   BatchTracker
@@ -40,6 +41,7 @@ func NewBatchWorker[T any](
 	flushEvery time.Duration,
 	processor Processor[T],
 	tracker BatchTracker,
+	retryConfigs ...RetryConfig,
 ) *BatchWorker[T] {
 	if workerCount <= 0 {
 		workerCount = 1
@@ -62,6 +64,7 @@ func NewBatchWorker[T any](
 		workerCount: workerCount,
 		batchSize:   batchSize,
 		flushEvery:  flushEvery,
+		retryConfig: normalizeRetryConfig(retryConfigs),
 		processor:   processor,
 		tracker:     tracker,
 		redis:       newRedisAdapter(redisClient),
@@ -321,7 +324,7 @@ func (w *BatchWorker[T]) saveBatch(
 	ctx context.Context,
 	items []T,
 ) error {
-	err := retry(3, func() error {
+	err := retry(w.retryConfig.ProcessorAttempts, func() error {
 		if w.limiter != nil &&
 			w.limiter.DB != nil {
 			if err := w.limiter.DB.Acquire(ctx, 1); err != nil {
@@ -556,7 +559,7 @@ func (w *BatchWorker[T]) RetryFailedBatch(id string) error {
 			return ErrDeadJob
 		}
 
-		if batch.RetryCount >= MaxRetryCount {
+		if batch.RetryCount >= w.retryConfig.MaxRetries {
 
 			now := time.Now()
 

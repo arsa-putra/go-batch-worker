@@ -52,6 +52,23 @@ The framework accepts clients from `gopkg.in/redis.v5` and `github.com/redis/go-
 
 For permanent errors that must be recorded as failed but never retried, return `worker.SkipRetry(err)` from the processor. The failed item is marked with `skip_retry: true` in tracker results.
 
+Failed jobs are retried up to 3 times by default. You can set this per worker during initialization. `ProcessorAttempts` controls the immediate attempts made by `BatchWorker` before it saves a failed batch; `MaxRetries` controls retries from the failed-job queue for both worker types. Zero fields keep their defaults. Existing constructor calls remain valid.
+
+```go
+retryConfig := worker.RetryConfig{
+	MaxRetries:        5,
+	ProcessorAttempts: 2,
+}
+
+batchWorker := worker.NewBatchWorker(
+	rdb, 3, 10000, 100, 2*time.Second,
+	&DeviceLogProcessor{}, tracker, retryConfig,
+)
+bulkWorker := worker.NewBulkWorker(
+	rdb, 5, 1000, &TransferProcessor{Tracker: tracker}, retryConfig,
+)
+```
+
 ---
 
 ## 💡 Quick Start Example
