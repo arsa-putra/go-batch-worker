@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Added support for both `gopkg.in/redis.v5` clients and `go-redis/v9` clients. The internal adapter keeps context handling out of framework usage and preserves existing Redis operations.
+- Added a non-retryable failure path via `SkipRetry(err)` and `CompleteFailedWithSkipRetry`.
 
 ## [v1.2.0] - 2026-09-16
 

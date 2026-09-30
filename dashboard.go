@@ -269,10 +269,10 @@ const dashboardDetailHTML = `
         <div id="tab-failed" class="tab-content">
             <input type="text" id="searchFailed" class="search-box" placeholder="Search failed keys..." onkeyup="resetPage('failed'); renderTable('failed')">
             <table id="tableFailed">
-                <thead><tr><th>Email / Key</th><th>Message</th></tr></thead>
+                <thead><tr><th>Email / Key</th><th>Retry</th><th>Message</th></tr></thead>
                 <tbody>
                     {{range .FailedItems}}
-                    <tr class="failed-row" data-email="{{.Key}}"><td class="email-col">{{.Key}}</td><td>{{.Message}}</td></tr>
+                    <tr class="failed-row" data-email="{{.Key}}"><td class="email-col">{{.Key}}</td><td>{{if .SkipRetry}}Skipped{{else}}Enabled{{end}}</td><td>{{.Message}}</td></tr>
                     {{end}}
                 </tbody>
             </table>

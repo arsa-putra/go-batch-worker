@@ -257,6 +257,9 @@ func (w *BulkWorker[T]) run(
 				w.tryComplete(
 					job,
 				)
+				if errors.Is(err, ErrSkipRetry) {
+					continue
+				}
 				w.saveFailedJob(
 					job,
 					err,
@@ -494,6 +497,17 @@ func (w *BulkWorker[T]) RetryFailedJob(
 
 		job.RetryCount++
 		job.LastRetryAt = time.Now()
+		if errors.Is(err, ErrSkipRetry) {
+			now := time.Now()
+			job.IsDead = true
+			job.SkipRetry = true
+			job.DeadAt = &now
+			job.Status = "failed_skip_retry"
+
+			payload, _ := json.Marshal(job)
+			_ = w.redis.Set(dataKey, payload, 0).Err()
+			return ErrDeadJob
+		}
 
 		if job.RetryCount >= MaxRetryCount {
 
@@ -614,11 +628,12 @@ func (w *BulkWorker[T]) markFailed(job T, err error) {
 		return
 	}
 	if trackable, ok := any(job).(ResultTrackable); ok {
-
-		_ = w.tracker.CompleteFailed(
-			batchID,
-			trackable.FailedResult(err),
-		)
+		result := trackable.FailedResult(err)
+		if errors.Is(err, ErrSkipRetry) {
+			_ = w.tracker.CompleteFailedWithSkipRetry(batchID, result)
+		} else {
+			_ = w.tracker.CompleteFailed(batchID, result)
+		}
 
 		return
 	}

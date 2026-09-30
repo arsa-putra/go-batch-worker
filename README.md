@@ -50,6 +50,8 @@ go get github.com/arsa-putra/go-batch-worker
 
 The framework accepts clients from `gopkg.in/redis.v5` and `github.com/redis/go-redis/v9`. For go-redis v9, it accepts `redis.UniversalClient`, so standalone, cluster, ring, and failover clients work with the same worker setup. The library API version is not a required Redis server version; server compatibility follows the client library and the commands the framework uses.
 
+For permanent errors that must be recorded as failed but never retried, return `worker.SkipRetry(err)` from the processor. The failed item is marked with `skip_retry: true` in tracker results.
+
 ---
 
 ## 💡 Quick Start Example

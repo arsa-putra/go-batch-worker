@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -349,10 +350,9 @@ func (w *BatchWorker[T]) saveBatch(
 	})
 
 	if err != nil {
-		w.saveFailedBatch(
-			items,
-			err,
-		)
+		if !errors.Is(err, ErrSkipRetry) {
+			w.saveFailedBatch(items, err)
+		}
 
 		return err
 	}
@@ -544,6 +544,17 @@ func (w *BatchWorker[T]) RetryFailedBatch(id string) error {
 		retryFailedMetric.Inc()
 		batch.RetryCount++
 		batch.LastRetryAt = time.Now()
+		if errors.Is(err, ErrSkipRetry) {
+			now := time.Now()
+			batch.IsDead = true
+			batch.SkipRetry = true
+			batch.DeadAt = &now
+			batch.Status = "failed_skip_retry"
+
+			payload, _ := json.Marshal(batch)
+			_ = w.redis.Set(dataKey, payload, 0).Err()
+			return ErrDeadJob
+		}
 
 		if batch.RetryCount >= MaxRetryCount {
 

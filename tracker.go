@@ -35,6 +35,12 @@ type BatchTracker interface {
 	LoadPendingPayloads(batchID string) ([]map[string]interface{}, error)
 }
 
+// SkipRetryBatchTracker is implemented by trackers that can record a failed
+// item which must not be scheduled for retry.
+type SkipRetryBatchTracker interface {
+	CompleteFailedWithSkipRetry(batchID string, result BatchItemResult) error
+}
+
 type RedisBatchTracker struct {
 	redis   *redisAdapter
 	options BatchOptions
@@ -425,27 +431,6 @@ func (t *RedisBatchTracker) BuildResult(
 		return nil, err
 	}
 
-	// --- REMOVE DUPLICATES & CROSS-CONTAMINATION ---
-	// Filter out duplicate failures
-	seenFailed := make(map[string]bool)
-	var cleanFailed []BatchItemResult
-	for _, item := range failedItems {
-		if !seenFailed[item.Key] {
-			seenFailed[item.Key] = true
-			cleanFailed = append(cleanFailed, item)
-		}
-	}
-
-	seenSuccess := make(map[string]bool)
-	var cleanSuccess []BatchItemResult
-	for _, item := range successItems {
-		// Filter out duplicates and ensure items present in failed do not appear in success
-		if !seenSuccess[item.Key] && !seenFailed[item.Key] {
-			seenSuccess[item.Key] = true
-			cleanSuccess = append(cleanSuccess, item)
-		}
-	}
-
 	finishedAt, _ := t.redis.HGet(
 		t.stateKey(batchID),
 		"finished_at",
@@ -461,8 +446,8 @@ func (t *RedisBatchTracker) BuildResult(
 		)
 
 	// Calculate clean counts and dynamic processing tasks
-	cleanSuccessCount := int64(len(cleanSuccess))
-	cleanFailedCount := int64(len(cleanFailed))
+	cleanSuccessCount := int64(len(successItems))
+	cleanFailedCount := int64(len(failedItems))
 	doneCount := cleanSuccessCount + cleanFailedCount
 
 	processing := state.Total - doneCount
@@ -494,8 +479,8 @@ func (t *RedisBatchTracker) BuildResult(
 
 		FinishedAt: finishedAt,
 
-		SuccessItems:    cleanSuccess,
-		FailedItems:     cleanFailed,
+		SuccessItems:    successItems,
+		FailedItems:     failedItems,
 		ProcessingItems: processingItems,
 
 		StoredSuccesses: storedSuccesses,
@@ -529,8 +514,24 @@ func (t *RedisBatchTracker) CompleteFailed(
 	batchID string,
 	result BatchItemResult,
 ) error {
+	return t.completeFailed(batchID, result, false)
+}
+
+func (t *RedisBatchTracker) CompleteFailedWithSkipRetry(
+	batchID string,
+	result BatchItemResult,
+) error {
+	return t.completeFailed(batchID, result, true)
+}
+
+func (t *RedisBatchTracker) completeFailed(
+	batchID string,
+	result BatchItemResult,
+	skipRetry bool,
+) error {
 
 	result.Success = false
+	result.SkipRetry = skipRetry
 
 	if err := t.SaveResult(
 		batchID,
