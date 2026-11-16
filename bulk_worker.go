@@ -106,11 +106,13 @@ func (w *BulkWorker[T]) Submit(
 		if identifiable, ok := any(job).(ItemIdentifiable); ok {
 			batchID := identifiable.GetBatchID()
 
-			// 1. Track pending payload details for the processing dashboard
-			_ = w.tracker.TrackPendingPayload(batchID, identifiable.GetItemID(), job)
-
-			// 2. Automatically link the batch ID to this specific worker/job name
-			_ = w.tracker.LinkBatchToJob(w.Name(), batchID)
+			// Batch pending data and the job index in one Redis pipeline.
+			_ = w.tracker.trackPendingPayloadAndLinkJob(
+				batchID,
+				identifiable.GetItemID(),
+				w.Name(),
+				job,
+			)
 		}
 	}
 
@@ -361,14 +363,7 @@ func (w *BulkWorker[T]) FailedJobsPaginated(
 	page int,
 	size int,
 ) ([]FailedJob[T], int) {
-
-	if page <= 0 {
-		page = 1
-	}
-
-	if size <= 0 {
-		size = 10
-	}
+	page, size = normalizeFailedPage(page, size)
 
 	listKey := fmt.Sprintf(
 		"worker:%s:failed:list",
@@ -379,8 +374,16 @@ func (w *BulkWorker[T]) FailedJobsPaginated(
 		listKey,
 	).Result()
 
-	start := int64((page - 1) * size)
-	end := start + int64(size) - 1
+	if total <= 0 {
+		return []FailedJob[T]{}, int(total)
+	}
+	pageOffset := int64(page - 1)
+	pageSize := int64(size)
+	if pageOffset > (total-1)/pageSize {
+		return []FailedJob[T]{}, int(total)
+	}
+	start := pageOffset * pageSize
+	end := start + pageSize - 1
 
 	ids, _ := w.redis.LRange(
 		listKey,
@@ -388,42 +391,52 @@ func (w *BulkWorker[T]) FailedJobsPaginated(
 		end,
 	).Result()
 
-	result := make(
-		[]FailedJob[T],
-		0,
-	)
+	return loadFailedRecords[FailedJob[T]](w.redis, w.Name(), ids), int(total)
+}
 
-	for _, id := range ids {
+func normalizeFailedPage(page, size int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 10
+	}
+	return page, size
+}
 
-		dataKey := fmt.Sprintf(
-			"worker:%s:failed:data:%s",
-			w.Name(),
-			id,
-		)
-
-		raw, err := w.redis.Get(
-			dataKey,
-		).Result()
-
-		if err != nil {
-			continue
-		}
-
-		var item FailedJob[T]
-
-		if err := json.Unmarshal(
-			[]byte(raw),
-			&item,
-		); err == nil {
-
-			result = append(
-				result,
-				item,
-			)
-		}
+func loadFailedRecords[T any](redis *redisAdapter, workerName string, ids []string) []T {
+	if len(ids) == 0 {
+		return []T{}
 	}
 
-	return result, int(total)
+	result := make([]T, 0, len(ids))
+	const pipelineBatchSize = 100
+	for start := 0; start < len(ids); start += pipelineBatchSize {
+		end := start + pipelineBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batchIDs := ids[start:end]
+		pipe := redis.Pipeline()
+		commands := make([]redisPipelineStringCmd, len(batchIDs))
+		for i, id := range batchIDs {
+			key := fmt.Sprintf("worker:%s:failed:data:%s", workerName, id)
+			commands[i] = pipe.Get(key)
+		}
+		_ = pipe.Exec()
+
+		for _, command := range commands {
+			raw, err := command.Result()
+			if err != nil {
+				continue
+			}
+			var item T
+			if json.Unmarshal([]byte(raw), &item) == nil {
+				result = append(result, item)
+			}
+		}
+	}
+	return result
 }
 
 func (w *BulkWorker[T]) RetryFailedJob(

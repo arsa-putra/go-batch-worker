@@ -47,7 +47,7 @@ func TestRetryFailedJob_DLQ(
 
 	rdb := redis.NewClient(
 		&redis.Options{
-			Addr: "localhost:6379",
+			Addr: redisTestAddr(t),
 			DB:   15,
 		},
 	)
@@ -69,6 +69,10 @@ func TestRetryFailedJob_DLQ(
 		job,
 		errors.New("failed"),
 	)
+	failedJobs, failedCount := w.FailedJobsPaginated(1, 10)
+	if failedCount != 1 || len(failedJobs) != 1 {
+		t.Fatalf("failed jobs page = %d items, total %d; want one item", len(failedJobs), failedCount)
+	}
 
 	autoRetry :=
 		NewAutoRetryWorker(

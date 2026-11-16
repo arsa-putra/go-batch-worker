@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -40,50 +41,56 @@ func (w *WebhookRetryWorker) Start(
 }
 
 func (w *WebhookRetryWorker) runOnce() {
+	now := time.Now().Unix()
+	if err := ensureWebhookRetryIndex(w.tracker.redis); err != nil {
+		if errors.Is(err, errWebhookRetryIndexBuilding) {
+			_ = forEachWebhookRetryState(w.tracker.redis, func(state *WebhookRetryState) error {
+				w.processRetryState(state, now)
+				return nil
+			})
+		}
+		return
+	}
 
-	states, err :=
-		FindWebhookRetryStates(
-			w.tracker.redis,
-		)
+	states, err := findDueWebhookRetryStates(w.tracker.redis, now, webhookRetryIndexBatch)
+	if err != nil {
+		return
+	}
+	for _, state := range states {
+		w.processRetryState(state, now)
+	}
+}
+
+func (w *WebhookRetryWorker) processRetryState(state *WebhookRetryState, now int64) {
+	if state.NextRetryAt > now {
+		return
+	}
+
+	ok, err := ClaimWebhookRetry(
+		w.tracker.redis,
+		state.BatchID,
+	)
 
 	if err != nil {
 		return
 	}
 
-	now := time.Now().Unix()
+	if !ok {
+		return
+	}
 
-	for _, state := range states {
+	func() {
 
-		if state.NextRetryAt > now {
-			continue
-		}
-
-		ok, err := ClaimWebhookRetry(
+		defer ReleaseWebhookRetry(
 			w.tracker.redis,
 			state.BatchID,
 		)
 
-		if err != nil {
-			continue
-		}
+		_ = w.Process(
+			state,
+		)
 
-		if !ok {
-			continue
-		}
-
-		func() {
-
-			defer ReleaseWebhookRetry(
-				w.tracker.redis,
-				state.BatchID,
-			)
-
-			_ = w.Process(
-				state,
-			)
-
-		}()
-	}
+	}()
 }
 
 func (w *WebhookRetryWorker) Close() {

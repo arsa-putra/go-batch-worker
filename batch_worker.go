@@ -425,13 +425,7 @@ func (w *BatchWorker[T]) FailedBatchesPaginated(
 	page int,
 	size int,
 ) ([]FailedBatch[T], int) {
-	if page <= 0 {
-		page = 1
-	}
-
-	if size <= 0 {
-		size = 10
-	}
+	page, size = normalizeFailedPage(page, size)
 
 	listKey := fmt.Sprintf(
 		"worker:%s:failed:list",
@@ -442,8 +436,16 @@ func (w *BatchWorker[T]) FailedBatchesPaginated(
 		listKey,
 	).Result()
 
-	start := int64((page - 1) * size)
-	end := start + int64(size) - 1
+	if total <= 0 {
+		return []FailedBatch[T]{}, int(total)
+	}
+	pageOffset := int64(page - 1)
+	pageSize := int64(size)
+	if pageOffset > (total-1)/pageSize {
+		return []FailedBatch[T]{}, int(total)
+	}
+	start := pageOffset * pageSize
+	end := start + pageSize - 1
 
 	ids, _ := w.redis.LRange(
 		listKey,
@@ -451,40 +453,7 @@ func (w *BatchWorker[T]) FailedBatchesPaginated(
 		end,
 	).Result()
 
-	result := make(
-		[]FailedBatch[T],
-		0,
-	)
-
-	for _, id := range ids {
-		dataKey := fmt.Sprintf(
-			"worker:%s:failed:data:%s",
-			w.Name(),
-			id,
-		)
-
-		raw, err := w.redis.Get(
-			dataKey,
-		).Result()
-
-		if err != nil {
-			continue
-		}
-
-		var batch FailedBatch[T]
-
-		if err := json.Unmarshal(
-			[]byte(raw),
-			&batch,
-		); err == nil {
-			result = append(
-				result,
-				batch,
-			)
-		}
-	}
-
-	return result, int(total)
+	return loadFailedRecords[FailedBatch[T]](w.redis, w.Name(), ids), int(total)
 }
 
 func (w *BatchWorker[T]) RetryFailedBatch(id string) error {

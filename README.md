@@ -218,8 +218,6 @@ The library provides built-in endpoints for visual and programmatic monitoring:
 * List Batches: `GET /api/batches?page=1&limit=20`
 * Batch Detail: `GET /api/batches/{id}/detail?page=1&limit=20`
 
-
-
 ---
 
 ## 📄 License
