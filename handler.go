@@ -11,6 +11,22 @@ import (
 	"golang.org/x/text/language"
 )
 
+type paginatedBatchDetailTracker interface {
+	BuildResultPage(batchID string, page, limit int) (*BatchResult, int, int, error)
+}
+
+func dashboardPageParams(r *http.Request) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	return page, limit
+}
+
 // RenderDashboardList renders the HTML page listing ALL recorded batches.
 func RenderDashboardList(w http.ResponseWriter, tracker BatchTracker) {
 	batches, err := tracker.ListBatches()
@@ -93,14 +109,7 @@ func ServeDashboardListJSON(w http.ResponseWriter, r *http.Request, tracker Batc
 		return
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 {
-		limit = 20
-	}
+	page, limit := dashboardPageParams(r)
 
 	paginatedBatches, total := paginateSlice(batches, page, limit)
 
@@ -123,14 +132,7 @@ func ServeDashboardListByJobNameJSON(w http.ResponseWriter, r *http.Request, tra
 		return
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 {
-		limit = 20
-	}
+	page, limit := dashboardPageParams(r)
 
 	paginatedBatches, total := paginateSlice(batches, page, limit)
 
@@ -147,26 +149,23 @@ func ServeDashboardListByJobNameJSON(w http.ResponseWriter, r *http.Request, tra
 
 // ServeDashboardDetailJSON serves a specific batch detail in JSON format with independent item pagination.
 func ServeDashboardDetailJSON(w http.ResponseWriter, r *http.Request, tracker BatchTracker, batchID string) {
-	result, err := tracker.BuildResult(batchID)
+	page, limit := dashboardPageParams(r)
+	var result *BatchResult
+	var totalFailed, totalSuccess int
+	var err error
+	if paginatedTracker, ok := tracker.(paginatedBatchDetailTracker); ok {
+		result, totalFailed, totalSuccess, err = paginatedTracker.BuildResultPage(batchID, page, limit)
+	} else {
+		result, err = tracker.BuildResult(batchID)
+		if err == nil {
+			result.FailedItems, totalFailed = paginateSlice(result.FailedItems, page, limit)
+			result.SuccessItems, totalSuccess = paginateSlice(result.SuccessItems, page, limit)
+		}
+	}
 	if err != nil {
 		http.Error(w, "Batch not found", http.StatusNotFound)
 		return
 	}
-
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 {
-		limit = 20
-	}
-
-	paginatedFailed, totalFailed := paginateSlice(result.FailedItems, page, limit)
-	paginatedSuccess, totalSuccess := paginateSlice(result.SuccessItems, page, limit)
-
-	result.FailedItems = paginatedFailed
-	result.SuccessItems = paginatedSuccess
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

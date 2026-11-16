@@ -108,6 +108,10 @@ func (t *RedisBatchTracker) Get(
 	if err != nil {
 		return nil, err
 	}
+	return batchStateFromHash(batchID, m)
+}
+
+func batchStateFromHash(batchID string, m map[string]string) (*BatchState, error) {
 	if len(m) == 0 {
 		return nil, fmt.Errorf(
 			"batch %s not found",
@@ -431,47 +435,141 @@ func (t *RedisBatchTracker) BuildResult(
 		return nil, err
 	}
 
+	return t.buildResultFromItems(
+		state,
+		successItems,
+		failedItems,
+		int64(len(successItems)),
+		int64(len(failedItems)),
+	)
+}
+
+// BuildResultPage reads only the requested result items while retaining total
+// list counts for dashboard pagination.
+func (t *RedisBatchTracker) BuildResultPage(
+	batchID string,
+	page int,
+	limit int,
+) (*BatchResult, int, int, error) {
+	state, err := t.Get(batchID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	successItems, totalSuccess, err := t.loadResultPage(t.successKey(batchID), page, limit)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	failedItems, totalFailed, err := t.loadResultPage(t.failedKey(batchID), page, limit)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	result, err := t.buildResultFromItems(
+		state,
+		successItems,
+		failedItems,
+		int64(totalSuccess),
+		int64(totalFailed),
+	)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return result, totalFailed, totalSuccess, nil
+}
+
+func (t *RedisBatchTracker) loadResultPage(key string, page, limit int) ([]BatchItemResult, int, error) {
+	total, err := t.redis.LLen(key).Result()
+	if err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []BatchItemResult{}, 0, nil
+	}
+
+	pageOffset := int64(page - 1)
+	pageSize := int64(limit)
+	if pageOffset > (total-1)/pageSize {
+		return []BatchItemResult{}, int(total), nil
+	}
+	start := pageOffset * pageSize
+	end := start + pageSize - 1
+	if end >= total {
+		end = total - 1
+	}
+
+	rows, err := t.redis.LRange(key, start, end).Result()
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]BatchItemResult, 0, len(rows))
+	for _, row := range rows {
+		var item BatchItemResult
+		if json.Unmarshal([]byte(row), &item) == nil {
+			items = append(items, item)
+		}
+	}
+	return items, int(total), nil
+}
+
+func (t *RedisBatchTracker) buildResultFromItems(
+	state *BatchState,
+	successItems []BatchItemResult,
+	failedItems []BatchItemResult,
+	successCount int64,
+	failedCount int64,
+) (*BatchResult, error) {
+	// Automatically fetch remaining processing keys from Redis Set
+	processingItems, err := t.LoadPendingPayloads(state.BatchID)
+	if err != nil {
+		processingItems = []map[string]interface{}{}
+	}
+	return t.buildResultFromItemsAndPending(
+		state,
+		successItems,
+		failedItems,
+		successCount,
+		failedCount,
+		processingItems,
+	)
+}
+
+func (t *RedisBatchTracker) buildResultFromItemsAndPending(
+	state *BatchState,
+	successItems []BatchItemResult,
+	failedItems []BatchItemResult,
+	successCount int64,
+	failedCount int64,
+	processingItems []map[string]interface{},
+) (*BatchResult, error) {
 	finishedAt, _ := t.redis.HGet(
-		t.stateKey(batchID),
+		t.stateKey(state.BatchID),
 		"finished_at",
 	).Int64()
+	storedErrors, _ := t.getStoredErrorCount(state.BatchID)
+	storedSuccesses, _ := t.getStoredSuccessCount(state.BatchID)
 
-	storedErrors, _ := t.getStoredErrorCount(
-		batchID,
-	)
-
-	storedSuccesses, _ :=
-		t.getStoredSuccessCount(
-			batchID,
-		)
-
-	// Calculate clean counts and dynamic processing tasks
-	cleanSuccessCount := int64(len(successItems))
-	cleanFailedCount := int64(len(failedItems))
-	doneCount := cleanSuccessCount + cleanFailedCount
-
+	doneCount := successCount + failedCount
 	processing := state.Total - doneCount
 	if processing < 0 {
 		processing = 0
 	}
-
 	status := state.Status
 	if doneCount >= state.Total {
 		status = "completed"
 	}
 
-	// Automatically fetch remaining processing keys from Redis Set
-	processingItems, err := t.LoadPendingPayloads(batchID)
-	if err != nil {
-		processingItems = []map[string]interface{}{}
-	}
-
 	return &BatchResult{
-		BatchID: batchID,
+		BatchID: state.BatchID,
 
 		Total:   state.Total,
-		Success: cleanSuccessCount,
-		Failed:  cleanFailedCount,
+		Success: successCount,
+		Failed:  failedCount,
 
 		Processing: processing,
 		CreatedAt:  state.CreatedAt,
@@ -715,8 +813,8 @@ func (t *RedisBatchTracker) FinalizeBatch(
 
 func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 	var cursor uint64
-	var batchIDs []string
-	seen := make(map[string]bool)
+	var batches []*BatchState
+	seen := make(map[string]struct{})
 
 	for {
 		var keys []string
@@ -727,6 +825,7 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 			return nil, err
 		}
 
+		pageBatchIDs := make([]string, 0, len(keys))
 		for _, key := range keys {
 			// Split the key by colon ":"
 			// worker:batch:{id} has length of 3
@@ -734,48 +833,18 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 			parts := strings.Split(key, ":")
 			if len(parts) == 3 {
 				batchID := parts[2]
-				if !seen[batchID] {
-					seen[batchID] = true
-					batchIDs = append(batchIDs, batchID)
+				if _, ok := seen[batchID]; ok {
+					continue
 				}
+				seen[batchID] = struct{}{}
+				pageBatchIDs = append(pageBatchIDs, batchID)
 			}
 		}
+		batches = append(batches, t.loadBatchSummaries(pageBatchIDs)...)
 
 		// If cursor returns to 0, the Redis scan is complete
 		if cursor == 0 {
 			break
-		}
-	}
-
-	// Loop through all valid batch IDs and retrieve their respective states
-	var batches []*BatchState
-	for _, id := range batchIDs {
-		state, err := t.Get(id)
-		if err == nil {
-			// FIX: Retrieve cleaned and deduplicated data via BuildResult
-			result, errResult := t.BuildResult(id)
-			if errResult == nil {
-				// 1. Override raw counters with cleaned data counts
-				state.Success = result.Success
-				state.Failed = result.Failed
-
-				// 2. Recalculate the actual done count
-				state.Done = state.Success + state.Failed
-
-				// 3. Recalculate remaining processing tasks
-				processing := state.Total - state.Done
-				if processing < 0 {
-					processing = 0
-				}
-				state.Processing = processing
-
-				// 4. Update status based on the accurate calculated counts
-				if state.Done >= state.Total {
-					state.Status = "completed"
-				}
-			}
-
-			batches = append(batches, state)
 		}
 	}
 
@@ -784,6 +853,59 @@ func (t *RedisBatchTracker) ListBatches() ([]*BatchState, error) {
 	})
 
 	return batches, nil
+}
+
+func (t *RedisBatchTracker) setStoredResultCounts(state *BatchState, success, failed int64) {
+	state.Success = success
+	state.Failed = failed
+	state.Done = success + failed
+	state.Processing = state.Total - state.Done
+	if state.Processing < 0 {
+		state.Processing = 0
+	}
+	if state.Done >= state.Total {
+		state.Status = "completed"
+	}
+}
+
+func (t *RedisBatchTracker) loadBatchSummaries(batchIDs []string) []*BatchState {
+	const batchSummaryPipelineSize = 100
+	var batches []*BatchState
+	for start := 0; start < len(batchIDs); start += batchSummaryPipelineSize {
+		end := start + batchSummaryPipelineSize
+		if end > len(batchIDs) {
+			end = len(batchIDs)
+		}
+		ids := batchIDs[start:end]
+		pipe := t.redis.Pipeline()
+		states := make([]redisPipelineMapStringStringCmd, len(ids))
+		successCounts := make([]redisPipelineIntCmd, len(ids))
+		failedCounts := make([]redisPipelineIntCmd, len(ids))
+		for i, id := range ids {
+			states[i] = pipe.HGetAll(t.stateKey(id))
+			successCounts[i] = pipe.LLen(t.successKey(id))
+			failedCounts[i] = pipe.LLen(t.failedKey(id))
+		}
+		_ = pipe.Exec()
+
+		for i, id := range ids {
+			fields, err := states[i].Result()
+			if err != nil {
+				continue
+			}
+			state, err := batchStateFromHash(id, fields)
+			if err != nil {
+				continue
+			}
+			success, successErr := successCounts[i].Result()
+			failed, failedErr := failedCounts[i].Result()
+			if successErr == nil && failedErr == nil {
+				t.setStoredResultCounts(state, success, failed)
+			}
+			batches = append(batches, state)
+		}
+	}
+	return batches
 }
 
 // Helper key for processing payload data
@@ -835,6 +957,28 @@ func (t *RedisBatchTracker) TrackPendingPayload(batchID string, itemID string, p
 	return t.UpdatePendingPayloadStatus(batchID, itemID, "waiting", 0)
 }
 
+func (t *RedisBatchTracker) trackPendingPayloadAndLinkJob(
+	batchID string,
+	itemID string,
+	jobName string,
+	payload interface{},
+) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	status, err := json.Marshal(pendingPayloadStatus{Status: "waiting"})
+	if err != nil {
+		return err
+	}
+
+	pipe := t.redis.Pipeline()
+	pipe.HSet(t.processingDataKey(batchID), itemID, string(data))
+	pipe.HSet(t.processingStatusKey(batchID), itemID, string(status))
+	pipe.SAdd(t.jobBatchesKey(jobName), batchID)
+	return pipe.Exec()
+}
+
 // Remove payload from processing hash when completed
 func (t *RedisBatchTracker) RemovePendingPayload(batchID string, itemID string) error {
 	if err := t.redis.HDel(t.processingDataKey(batchID), itemID).Err(); err != nil {
@@ -845,11 +989,17 @@ func (t *RedisBatchTracker) RemovePendingPayload(batchID string, itemID string) 
 
 // Load all processing payloads as a map or slice of structs/maps
 func (t *RedisBatchTracker) LoadPendingPayloads(batchID string) ([]map[string]interface{}, error) {
-	resultMap, err := t.redis.HGetAll(t.processingDataKey(batchID)).Result()
+	pipe := t.redis.Pipeline()
+	resultCommand := pipe.HGetAll(t.processingDataKey(batchID))
+	statusCommand := pipe.HGetAll(t.processingStatusKey(batchID))
+	if err := pipe.Exec(); err != nil {
+		return nil, err
+	}
+	resultMap, err := resultCommand.Result()
 	if err != nil {
 		return nil, err
 	}
-	statusMap, err := t.redis.HGetAll(t.processingStatusKey(batchID)).Result()
+	statusMap, err := statusCommand.Result()
 	if err != nil {
 		return nil, err
 	}
@@ -897,31 +1047,7 @@ func (t *RedisBatchTracker) LoadBatchesByJob(jobName string) ([]*BatchState, err
 		return nil, err
 	}
 
-	var batches []*BatchState
-	for _, id := range batchIDs {
-		state, err := t.Get(id)
-		if err == nil {
-			// Retrieve cleaned and deduplicated data to ensure accurate dashboard counters
-			result, errResult := t.BuildResult(id)
-			if errResult == nil {
-				state.Success = result.Success
-				state.Failed = result.Failed
-
-				state.Done = state.Success + state.Failed
-
-				processing := state.Total - state.Done
-				if processing < 0 {
-					processing = 0
-				}
-				state.Processing = processing
-
-				if state.Done >= state.Total {
-					state.Status = "completed"
-				}
-			}
-			batches = append(batches, state)
-		}
-	}
+	batches := t.loadBatchSummaries(batchIDs)
 
 	sort.Slice(batches, func(i, j int) bool {
 		return batches[i].CreatedAt > batches[j].CreatedAt

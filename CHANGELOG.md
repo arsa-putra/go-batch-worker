@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0-v1.0.0.html).
 
+## [v1.3.1] - 2026-11-16
+
+### Changed
+- Indexed webhook retries by their next retry time so normal worker polls inspect due retries instead of scanning every retry state. Existing retry states are indexed lazily during migration.
+- Batched Redis operations for pending payload tracking, batch summaries, pending payload reads, and failed job or batch pages to reduce network round trips while preserving returned data.
+- Loaded only the requested success and failure result pages for dashboard JSON details while preserving the existing response shape and complete processing item list.
+- Added Redis integration coverage for go-redis v5 and v9 retry indexing, result pages, batch summaries, and pipelined updates.
+
 ## [v1.3.0] - 2026-09-30
 
 ### Added

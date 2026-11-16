@@ -98,16 +98,12 @@ func (w *WebhookRetryWorker) Process(
 }
 
 func (w *WebhookRetryWorker) Dashboard() map[string]interface{} {
-
-	states, _ :=
-		FindWebhookRetryStates(
-			w.tracker.redis,
-		)
+	pendingRetries, _ := countWebhookRetryStates(w.tracker.redis)
 
 	return map[string]interface{}{
 		"name": "webhook_retry",
 
-		"pending_retries": len(states),
+		"pending_retries": pendingRetries,
 
 		"max_attempts": w.config.MaxAttempts,
 	}
